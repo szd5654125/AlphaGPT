@@ -22,6 +22,41 @@ AlphaGPT 仓库速读
 - 公式 = token 序列；token 由“特征 + 算子”组成，StackVM 执行成因子信号。
 - 交易层只消费最终信号分数，负责风控与执行。
 
+当前因子与算子一览
+- 主流程因子（FeatureEngineer，6 个）
+  - ret：对数收益
+  - liq_score：流动性/FDV 健康度
+  - pressure：买卖力量不平衡
+  - fomo：成交量加速度
+  - dev：价格偏离均值
+  - log_vol：对数成交量
+- 扩展因子（AdvancedFactorEngineer，12 个）
+  - ret：对数收益
+  - liq_score：流动性/FDV 健康度
+  - pressure：买卖力量不平衡
+  - fomo：成交量加速度
+  - dev：价格偏离均值
+  - log_vol：对数成交量
+  - vol_cluster：波动率聚集
+  - momentum_rev：动量反转
+  - rel_strength：相对强弱（RSI 类）
+  - hl_range：高低价振幅
+  - close_pos：收盘在区间位置
+  - vol_trend：成交量趋势
+- 算子（OPS_CONFIG，12 个）
+  - ADD：加法
+  - SUB：减法
+  - MUL：乘法
+  - DIV：除法
+  - NEG：取负
+  - ABS：绝对值
+  - SIGN：符号
+  - GATE：门控选择（condition>0 选 x，否则 y）
+  - JUMP：极端跳变检测（zscore>3）
+  - DECAY：衰减叠加（t + 0.8*lag1 + 0.6*lag2）
+  - DELAY1：滞后 1
+  - MAX3：当前/滞后1/滞后2 最大值
+
 现状与依赖（实话版）
 - 需要外部服务：Postgres、Birdeye API、Solana RPC、Jupiter。
 - 缺少依赖清单与 .env 模板；实盘需要私钥配置。
