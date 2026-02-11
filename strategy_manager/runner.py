@@ -9,7 +9,7 @@ from data_pipeline.data_manager import DataManager
 from model_core.vm import StackVM
 from model_core.data_loader import CryptoDataLoader
 from execution.trader import SolanaTrader
-from execution.utils import get_mint_decimals
+from utils import get_mint_decimals
 from .config import StrategyConfig
 from .portfolio import PortfolioManager
 from .risk import RiskEngine

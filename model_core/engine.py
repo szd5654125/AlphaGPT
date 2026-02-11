@@ -2,7 +2,8 @@ import torch
 from torch.distributions import Categorical
 from tqdm import tqdm
 import json
-
+from .factors import FeatureEngineer
+from .ops import OPS_CONFIG
 from .config import ModelConfig
 from .data_loader import CryptoDataLoader
 from .alphagpt import AlphaGPT, NewtonSchulzLowRankDecay, StableRankMonitor
@@ -23,6 +24,12 @@ class AlphaEngine:
         self.loader.load_data()
         
         self.model = AlphaGPT().to(ModelConfig.DEVICE)
+        expected_vocab = FeatureEngineer.INPUT_DIM + len(OPS_CONFIG)
+        if getattr(self.model, "vocab_size", None) != expected_vocab:
+            raise ValueError(
+                f"Vocab mismatch: model.vocab_size={self.model.vocab_size}, "
+                f"but expected={expected_vocab} (FeatureEngineer.INPUT_DIM + len(OPS_CONFIG))"
+            )
         
         # Standard optimizer
         self.opt = torch.optim.AdamW(self.model.parameters(), lr=1e-3)
@@ -56,6 +63,50 @@ class AlphaEngine:
             'stable_rank': []
         }
 
+        self.feat_offset = FeatureEngineer.INPUT_DIM
+        self.vocab_size = self.feat_offset + len(OPS_CONFIG)
+        # 每个 token 的 arity：feature=0，op=1/2/3...
+        self.arity_vec = torch.zeros(self.vocab_size, dtype=torch.long, device=ModelConfig.DEVICE)
+        for j, (_, _, arity) in enumerate(OPS_CONFIG):
+            self.arity_vec[self.feat_offset + j] = arity
+        # 单步最大“降栈幅度”：max(arity-1)，用于判断“剩余步数是否还能收敛到 1”
+        self.max_reduce = max((arity - 1 for (_, _, arity) in OPS_CONFIG), default=0)
+
+    def _build_strict_mask_rpn(self, depth: torch.Tensor, step: int) -> torch.Tensor:
+        """
+        depth: [B] 当前栈深度（stack size）
+        返回: [B, vocab_size] 的 mask（允许=0，禁止=-inf）
+        """
+        B = depth.shape[0]
+        V = self.vocab_size
+        device = depth.device
+        # [B, V]
+        arity = self.arity_vec.unsqueeze(0).expand(B, V)
+        depth_b = depth.unsqueeze(1).expand(B, V)
+        # 选择该 token 后的栈深度
+        depth_after = torch.where(
+            arity == 0,  # feature
+            depth_b + 1,
+            depth_b - arity + 1  # op: -k + 1
+        )
+        # 条件1：不能 underflow（选 op 时必须 depth >= arity）
+        valid_underflow = (arity == 0) | (depth_b >= arity)
+        # 条件2：必须“可收敛”：剩余步数内至少存在一种方式能把 depth_after 收敛到 1
+        r_after = ModelConfig.MAX_FORMULA_LEN - (step + 1)
+        if r_after == 0:
+            finishable = (depth_after == 1)
+        elif self.max_reduce <= 0:
+            # 如果所有 op 都是 unary（arity-1=0），栈永远降不下去：必须一直保持 1
+            finishable = (depth_after == 1)
+        else:
+            # 最乐观情况下，每一步最多把栈深度减少 max_reduce
+            # 要从 d 收敛到 1，至少要减少 (d-1)
+            finishable = (depth_after <= (self.max_reduce * r_after + 1))
+        allowed = valid_underflow & finishable
+        mask = torch.full((B, V), float("-inf"), device=device, dtype=torch.float32)
+        mask.masked_fill_(allowed, 0.0)
+        return mask
+
     def train(self):
         print("🚀 Starting Meme Alpha Mining with LoRD Regularization..." if self.use_lord else "🚀 Starting Meme Alpha Mining...")
         if self.use_lord:
@@ -70,21 +121,29 @@ class AlphaEngine:
             
             log_probs = []
             tokens_list = []
-            
-            for _ in range(ModelConfig.MAX_FORMULA_LEN):
-                logits, _, _ = self.model(inp)
-                dist = Categorical(logits=logits)
+
+            depth = torch.zeros(bs, dtype=torch.long, device=ModelConfig.DEVICE)
+            for step_in_formula in range(ModelConfig.MAX_FORMULA_LEN):
+                logits, _, _ = self.model(inp)  # [B, V]
+                mask = self._build_strict_mask_rpn(depth, step_in_formula)  # [B, V]
+                dist = Categorical(logits=logits + mask)
                 action = dist.sample()
-                
                 log_probs.append(dist.log_prob(action))
                 tokens_list.append(action)
                 inp = torch.cat([inp, action.unsqueeze(1)], dim=1)
+                # 更新栈深度
+                arity = self.arity_vec[action]  # [B]
+                is_feat = (arity == 0)
+                depth = torch.where(is_feat, depth + 1, depth - arity + 1)
             
             seqs = torch.stack(tokens_list, dim=1)
             
             rewards = torch.zeros(bs, device=ModelConfig.DEVICE)
-            
+            invalid = 0
             for i in range(bs):
+                res = self.vm.execute(seqs[i].tolist(), self.loader.feat_tensor)
+                if res is None:
+                    invalid += 1
                 formula = seqs[i].tolist()
                 
                 res = self.vm.execute(formula, self.loader.feat_tensor)
@@ -104,7 +163,7 @@ class AlphaEngine:
                     self.best_score = score.item()
                     self.best_formula = formula
                     tqdm.write(f"[!] New King: Score {score:.2f} | Ret {ret_val:.2%} | Formula {formula}")
-            
+            tqdm.write(f"InvalidRatio={invalid / bs:.2%}")
             # Normalize rewards
             adv = (rewards - rewards.mean()) / (rewards.std() + 1e-5)
             

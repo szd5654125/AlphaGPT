@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from utils import shift1
 
 
 class RMSNormFactor(nn.Module):
@@ -29,14 +30,14 @@ class MemeIndicators:
 
     @staticmethod
     def fomo_acceleration(volume, window=5):
-        vol_prev = torch.roll(volume, 1, dims=1)
+        vol_prev = shift1(volume, fill=0.0)
         vol_chg = (volume - vol_prev) / (vol_prev + 1.0)
-        acc = vol_chg - torch.roll(vol_chg, 1, dims=1)
+        acc = vol_chg - shift1(vol_chg, fill=0.0)
         return torch.clamp(acc, -5.0, 5.0)
 
     @staticmethod
     def pump_deviation(close, window=20):
-        pad = torch.zeros((close.shape[0], window-1), device=close.device)
+        pad = close[:, :1].repeat(1, window-1)
         c_pad = torch.cat([pad, close], dim=1)
         ma = c_pad.unfold(1, window, 1).mean(dim=-1)
         dev = (close - ma) / (ma + 1e-9)
@@ -45,7 +46,7 @@ class MemeIndicators:
     @staticmethod
     def volatility_clustering(close, window=10):
         """Detect volatility clustering patterns"""
-        ret = torch.log(close / (torch.roll(close, 1, dims=1) + 1e-9))
+        ret = torch.log(close / (shift1(close, fill=0.0) + 1e-9))
         ret_sq = ret ** 2
         
         pad = torch.zeros((ret_sq.shape[0], window-1), device=close.device)
@@ -57,14 +58,14 @@ class MemeIndicators:
     @staticmethod
     def momentum_reversal(close, window=5):
         """Capture momentum reversal signals"""
-        ret = torch.log(close / (torch.roll(close, 1, dims=1) + 1e-9))
+        ret = torch.log(close / (shift1(close, fill=0.0) + 1e-9))
         
         pad = torch.zeros((ret.shape[0], window-1), device=close.device)
         ret_pad = torch.cat([pad, ret], dim=1)
         mom = ret_pad.unfold(1, window, 1).sum(dim=-1)
         
         # Detect reversals
-        mom_prev = torch.roll(mom, 1, dims=1)
+        mom_prev = shift1(mom, fill=0.0)
         reversal = (mom * mom_prev < 0).float()
         
         return reversal
@@ -72,7 +73,7 @@ class MemeIndicators:
     @staticmethod
     def relative_strength(close, high, low, window=14):
         """RSI-like indicator for strength detection"""
-        ret = close - torch.roll(close, 1, dims=1)
+        ret = close - shift1(close, fill=0.0)
         
         gains = torch.relu(ret)
         losses = torch.relu(-ret)
@@ -113,7 +114,7 @@ class AdvancedFactorEngineer:
         fdv = raw_dict['fdv']
         
         # Basic factors
-        ret = torch.log(c / (torch.roll(c, 1, dims=1) + 1e-9))
+        ret = torch.log(c / (shift1(c, fill=0.0) + 1e-9))
         liq_score = MemeIndicators.liquidity_health(liq, fdv)
         pressure = MemeIndicators.buy_sell_imbalance(c, o, h, l)
         fomo = MemeIndicators.fomo_acceleration(v)
@@ -132,7 +133,7 @@ class AdvancedFactorEngineer:
         close_pos = (c - l) / (h - l + 1e-9)
         
         # Volume trend
-        vol_prev = torch.roll(v, 1, dims=1)
+        vol_prev = shift1(v, fill=0.0)
         vol_trend = (v - vol_prev) / (vol_prev + 1.0)
         
         features = torch.stack([
@@ -166,7 +167,7 @@ class FeatureEngineer:
         liq = raw_dict['liquidity']
         fdv = raw_dict['fdv']
         
-        ret = torch.log(c / (torch.roll(c, 1, dims=1) + 1e-9))
+        ret = torch.log(c / (shift1(c, fill=0.0) + 1e-9))
         liq_score = MemeIndicators.liquidity_health(liq, fdv)
         pressure = MemeIndicators.buy_sell_imbalance(c, o, h, l)
         fomo = MemeIndicators.fomo_acceleration(v)

@@ -1,6 +1,7 @@
 from solana.rpc.async_api import AsyncClient
 from solders.pubkey import Pubkey
-from .config import ExecutionConfig
+from execution.config import ExecutionConfig
+import torch
 
 async def get_mint_decimals(mint_str: str, client: AsyncClient) -> int:
     if mint_str == ExecutionConfig.SOL_MINT:
@@ -15,3 +16,8 @@ async def get_mint_decimals(mint_str: str, client: AsyncClient) -> int:
         return int(decimals)
     except Exception:
         return 6
+
+def shift1(x, fill=0.0):
+    # x: [N, T]
+    pad = torch.full((x.shape[0], 1), fill, device=x.device, dtype=x.dtype)
+    return torch.cat([pad, x[:, :-1]], dim=1)
