@@ -5,6 +5,7 @@ import json
 from model_core.factors import FeatureEngineer
 from model_core.ops import OPS_CONFIG
 from model_core.config import ModelConfig
+from model_core.data_loader_csv import CsvCryptoDataLoader, CsvLoaderConfig
 from model_core.data_loader import CryptoDataLoader
 from model_core.alphagpt import AlphaGPT, NewtonSchulzLowRankDecay, StableRankMonitor
 from model_core.vm import StackVM
@@ -20,8 +21,15 @@ class AlphaEngine:
             lord_decay_rate: Strength of LoRD regularization
             lord_num_iterations: Number of Newton-Schulz iterations per step
         """
-        self.loader = CryptoDataLoader()
-        self.loader.load_data()
+        '''self.loader = CryptoDataLoader()
+        self.loader.load_data()'''
+        cfg = CsvLoaderConfig(
+            csv_paths=["./data/your_klines.csv"],  # 改成你的路径
+            device=ModelConfig.DEVICE,
+            max_symbols=50,  # 你可以先小一点试跑
+            liquidity_mode="quote_volume",
+        )
+        self.loader = CsvCryptoDataLoader(cfg).load_data()
         
         self.model = AlphaGPT().to(ModelConfig.DEVICE)
         expected_vocab = FeatureEngineer.INPUT_DIM + len(OPS_CONFIG)
