@@ -1,10 +1,10 @@
 import asyncio
 import aiohttp
 from loguru import logger
-from .config import Config
-from .db_manager import DBManager
-from .providers.birdeye import BirdeyeProvider
-from .providers.dexscreener import DexScreenerProvider
+from data_pipeline.config import Config
+from data_pipeline.db_manager import DBManager
+from data_pipeline.providers.birdeye import BirdeyeProvider
+from data_pipeline.providers.dexscreener import DexScreenerProvider
 
 class DataManager:
     def __init__(self):

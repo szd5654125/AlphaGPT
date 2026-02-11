@@ -1,8 +1,5 @@
-import math
 import argparse
 import random
-import copy
-import itertools
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm

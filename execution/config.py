@@ -1,10 +1,9 @@
 import os
 from dotenv import load_dotenv
 from solders.keypair import Keypair
-import base58
+
 
 load_dotenv()
-
 class ExecutionConfig:
     RPC_URL = os.getenv("QUICKNODE_RPC_URL", "填入RPC地址")
     _PRIV_KEY_STR = os.getenv("SOLANA_PRIVATE_KEY", "")

@@ -1,7 +1,6 @@
-import aiohttp
 from loguru import logger
-from .base import DataProvider
-from ..config import Config
+from data_pipeline.providers.base import DataProvider
+from data_pipeline.config import Config
 
 class DexScreenerProvider(DataProvider):
     def __init__(self):

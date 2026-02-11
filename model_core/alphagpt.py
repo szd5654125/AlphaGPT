@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .config import ModelConfig
-from .ops import OPS_CONFIG
+from model_core.config import ModelConfig
+from model_core.ops import OPS_CONFIG
 
 
 class NewtonSchulzLowRankDecay:

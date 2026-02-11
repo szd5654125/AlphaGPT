@@ -5,7 +5,7 @@
 #   pip3 install -r requirements.txt
 #   # Or use: pip install -r requirements.txt (if pip points to Python 3)
 #
-# For experimental scripts (times.py, lord/experiment.py):
+# For experimental scripts (a_market.py, lord/experiment.py):
 #   pip3 install -r requirements-optional.txt
 #   # Or use: pip install -r requirements-optional.txt (if pip points to Python 3)
 
@@ -46,4 +46,4 @@ psycopg2-binary>=2.9.10
 # ===== Optional Dependencies (For experimental scripts) =====
 # See requirements-optional.txt for:
 #   - matplotlib, seaborn (for lord/experiment.py visualization)
-#   - tushare (for times.py Chinese stock market data)
+#   - tushare (for a_market.py Chinese stock market data)

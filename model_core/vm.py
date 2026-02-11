@@ -1,6 +1,6 @@
 import torch
-from .ops import OPS_CONFIG
-from .factors import FeatureEngineer
+from model_core.ops import OPS_CONFIG
+from model_core.factors import FeatureEngineer
 
 class StackVM:
     def __init__(self):

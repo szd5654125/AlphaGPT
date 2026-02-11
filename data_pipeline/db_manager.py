@@ -1,6 +1,6 @@
 import asyncpg
 from loguru import logger
-from .config import Config
+from data_pipeline.config import Config
 
 class DBManager:
     def __init__(self):

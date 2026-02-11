@@ -2,8 +2,8 @@ import aiohttp
 import asyncio
 from datetime import datetime, timedelta
 from loguru import logger
-from ..config import Config
-from .base import DataProvider
+from data_pipeline.config import Config
+from data_pipeline.providers.base import DataProvider
 
 class BirdeyeProvider(DataProvider):
     def __init__(self):

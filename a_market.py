@@ -3,25 +3,23 @@ import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.distributions import Categorical
 import os
-import math
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-TS_TOKEN = '填入 Tushare Token'
+TS_TOKEN = '20af39742f461b1edc79ff0aec09c8940265babe0c6733e7bf358078'
 INDEX_CODE = '511260.SH'
-START_DATE = '20150101'
-END_DATE = '20240101'
-TEST_END_DATE = '20250101'
+START_DATE = '20150101' # 训练数据开始
+END_DATE = '20240101' # 训练数据结束
+TEST_END_DATE = '20250101' # 测试时间结束
 
 BATCH_SIZE = 1024
 TRAIN_ITERATIONS = 400
-MAX_SEQ_LEN = 8            # 限制公式长度，防止过拟合
+MAX_SEQ_LEN = 8            # 限制公式长度，防止过拟合，短小精悍的公式往往更稳
 COST_RATE = 0.0005         # 双边万一 (ETF/IC期货费率较低)，设为万五偏保守
 
-DATA_CACHE_PATH = 'data_cache_final.parquet'
+DATA_CACHE_PATH = 'data_cache_final.parquet' # 缓存文件，如果修改配置需要重命名
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_float32_matmul_precision('high')
 
@@ -61,14 +59,14 @@ OPS_CONFIG = [
     ('ADD', lambda x, y: x + y, 2),
     ('SUB', lambda x, y: x - y, 2),
     ('MUL', lambda x, y: x * y, 2),
-    ('DIV', lambda x, y: x / (y + 1e-6 * torch.sign(y)), 2),
+    ('DIV', lambda x, y: x / (y + 1e-6 * torch.sign(y)), 2), # 保护除法
     ('NEG', lambda x: -x, 1),
     ('ABS', lambda x: torch.abs(x), 1),
     ('SIGN', lambda x: torch.sign(x), 1),
     ('DELTA5', lambda x: _ts_delta(x, 5), 1),
     ('MA20',   lambda x: _ts_decay_linear(x, 20), 1),
-    ('STD20',  lambda x: _ts_zscore(x, 20), 1),
-    ('TS_RANK20', lambda x: _ts_zscore(x, 20), 1),
+    ('STD20',  lambda x: _ts_zscore(x, 20), 1),     # 捕捉异常波动
+    ('TS_RANK20', lambda x: _ts_zscore(x, 20), 1),  # 近似 Rank
 ]
 
 FEATURES = ['RET', 'RET5', 'VOL_CHG', 'V_RET', 'TREND']
@@ -108,7 +106,10 @@ class DataEngine:
             df = pd.read_parquet(DATA_CACHE_PATH)
         else:
             print(f"🌐 Fetching {INDEX_CODE}...")
+            # 注意：Tushare 的 pro.fund_daily 用于 ETF (如 159934.SZ)
+            # 而 pro.index_daily 用于指数 (如 000300.SH)
             if INDEX_CODE.endswith(".SZ") or INDEX_CODE.endswith(".SH"):
+                # 自动判断是基金还是指数
                 try:
                     df = self.pro.fund_daily(ts_code=INDEX_CODE, start_date=START_DATE, end_date=TEST_END_DATE)
                 except:
@@ -150,7 +151,7 @@ class DataEngine:
         trend[mask] = close[mask] / ma60[mask] - 1
         trend = np.nan_to_num(trend).astype(np.float32)
 
-        # Robust Normalization
+        # Robust Normalization (确保返回的是 float32 的 numpy)
         def robust_norm(x):
             x = x.astype(np.float32) # 强制转类型
             median = np.nanmedian(x)
@@ -158,6 +159,7 @@ class DataEngine:
             res = (x - median) / mad
             return np.clip(res, -5, 5).astype(np.float32)
 
+        # 构建特征张量
         self.feat_data = torch.stack([
             torch.from_numpy(robust_norm(ret)).to(DEVICE),
             torch.from_numpy(robust_norm(ret5)).to(DEVICE),
@@ -177,18 +179,19 @@ class DataEngine:
         self.raw_close = torch.from_numpy(close).to(DEVICE)
 
         self.split_idx = int(len(df) * 0.8)
-        print(f"{INDEX_CODE} Data Ready. Normalization Fixed.")
+        print(f"✅ {INDEX_CODE} Data Ready. Normalization Fixed.")
         return self
 
 class DeepQuantMiner:
     def __init__(self, engine):
         self.engine = engine
         self.model = AlphaGPT().to(DEVICE)
-        self.opt = torch.optim.AdamW(self.model.parameters(), lr=3e-4, weight_decay=1e-5)
+        self.opt = torch.optim.AdamW(self.model.parameters(), lr=3e-4, weight_decay=1e-5) # AdamW 防止过拟合
         self.best_sharpe = -10.0
         self.best_formula_tokens = None
 
     def get_strict_mask(self, open_slots, step):
+        # 严格的 Action Masking，确保生成合法的 Polish Notation 树
         B = open_slots.shape[0]
         mask = torch.full((B, VOCAB_SIZE), float('-inf'), device=DEVICE)
         remaining_steps = MAX_SEQ_LEN - step
@@ -209,6 +212,7 @@ class DeepQuantMiner:
     def solve_one(self, tokens):
         stack = []
         try:
+            # 倒序解析 (Reverse Polish like)
             for t in reversed(tokens):
                 if t < len(FEATURES):
                     stack.append(self.engine.feat_data[t])
@@ -296,7 +300,7 @@ class DeepQuantMiner:
 
         return torch.clamp(rewards, -3, 5)
     def train(self):
-        print(f"Training for Stable Profit... MAX_LEN={MAX_SEQ_LEN}")
+        print(f"🚀 Training for Stable Profit... MAX_LEN={MAX_SEQ_LEN}")
         pbar = tqdm(range(TRAIN_ITERATIONS))
 
         for _ in pbar:
@@ -369,7 +373,7 @@ class DeepQuantMiner:
 
 def final_reality_check(miner, engine):
     print("\n" + "="*60)
-    print("FINAL CHECK (Out-of-Sample)")
+    print("🔬 FINAL REALITY CHECK (Out-of-Sample)")
     print("="*60)
 
     formula_str = miner.decode()
@@ -398,7 +402,7 @@ def final_reality_check(miner, engine):
     position = np.sign(signal)
 
     # 检查涨跌停/停牌 (Limit Move Check)
-    # 这里认为如果 next_open 相对于 close 涨跌幅超过 9.5%，则无法成交
+    # 模拟：如果 next_open 相对于 close 涨跌幅超过 9.5%，则无法成交
     # raw_close[t], raw_open[t+1]
     # 需要对齐时间轴。target_oto_ret 对应的是 t+1 到 t+2。
     # 我们检查 t+1 开盘是否可交易。
@@ -435,21 +439,25 @@ def final_reality_check(miner, engine):
     print(f"Calmar Ratio   : {calmar:.2f}")
     print("-" * 60)
 
+    # 5. Plot
     plt.style.use('bmh')
     plt.figure(figsize=(12, 6))
 
+    # 绘制策略曲线
     plt.plot(test_dates, equity, label='Strategy (Open-to-Open)', linewidth=1.5)
 
+    # 绘制基准 (Buy & Hold)
+    # 基准也应该是 Open-to-Open
     bench_ret = test_ret
     bench_equity = (1 + bench_ret).cumprod()
     plt.plot(test_dates, bench_equity, label='Benchmark (CSI 300)', alpha=0.5, linewidth=1)
-
+    
     plt.title(f'Strict OOS Backtest: Ann Ret {ann_ret:.1%} | Sharpe {sharpe:.2f}')
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
     plt.savefig('strategy_performance.png')
-    print("Chart saved to 'strategy_performance.png'")
+    print("📈 Chart saved to 'strategy_performance.png'")
 
 if __name__ == "__main__":
     eng = DataEngine()

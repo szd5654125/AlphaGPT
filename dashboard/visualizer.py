@@ -1,6 +1,5 @@
 import plotly.express as px
 import plotly.graph_objects as go
-import pandas as pd
 
 def plot_pnl_distribution(portfolio_df):
     if portfolio_df.empty:

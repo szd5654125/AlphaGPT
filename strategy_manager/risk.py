@@ -1,4 +1,4 @@
-from .config import StrategyConfig
+from strategy_manager.config import StrategyConfig
 from execution.jupiter import JupiterAggregator # 复用 Jupiter 做模拟
 from loguru import logger
 

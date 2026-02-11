@@ -2,10 +2,9 @@ import asyncio
 from loguru import logger
 from solders.pubkey import Pubkey
 from solana.rpc.types import TokenAccountOpts
-
-from .config import ExecutionConfig
-from .rpc_handler import QuickNodeClient
-from .jupiter import JupiterAggregator
+from execution.config import ExecutionConfig
+from execution.rpc_handler import QuickNodeClient
+from execution.jupiter import JupiterAggregator
 
 class SolanaTrader:
     def __init__(self):

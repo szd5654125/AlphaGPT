@@ -1,7 +1,7 @@
 import asyncio
 from loguru import logger
-from .data_manager import DataManager
-from .config import Config
+from data_pipeline.data_manager import DataManager
+from data_pipeline.config import Config
 
 async def main():
     if not Config.BIRDEYE_API_KEY:

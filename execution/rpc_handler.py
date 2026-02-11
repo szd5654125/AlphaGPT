@@ -1,7 +1,7 @@
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed
 from loguru import logger
-from .config import ExecutionConfig
+from execution.config import ExecutionConfig
 
 class QuickNodeClient:
     def __init__(self):

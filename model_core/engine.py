@@ -2,13 +2,13 @@ import torch
 from torch.distributions import Categorical
 from tqdm import tqdm
 import json
-from .factors import FeatureEngineer
-from .ops import OPS_CONFIG
-from .config import ModelConfig
-from .data_loader import CryptoDataLoader
-from .alphagpt import AlphaGPT, NewtonSchulzLowRankDecay, StableRankMonitor
-from .vm import StackVM
-from .backtest import MemeBacktest
+from model_core.factors import FeatureEngineer
+from model_core.ops import OPS_CONFIG
+from model_core.config import ModelConfig
+from model_core.data_loader import CryptoDataLoader
+from model_core.alphagpt import AlphaGPT, NewtonSchulzLowRankDecay, StableRankMonitor
+from model_core.vm import StackVM
+from model_core.backtest import MemeBacktest
 
 class AlphaEngine:
     def __init__(self, use_lord_regularization=True, lord_decay_rate=1e-3, lord_num_iterations=5):

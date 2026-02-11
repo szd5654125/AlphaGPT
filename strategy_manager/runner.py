@@ -10,9 +10,9 @@ from model_core.vm import StackVM
 from model_core.data_loader import CryptoDataLoader
 from execution.trader import SolanaTrader
 from utils import get_mint_decimals
-from .config import StrategyConfig
-from .portfolio import PortfolioManager
-from .risk import RiskEngine
+from strategy_manager.config import StrategyConfig
+from strategy_manager.portfolio import PortfolioManager
+from strategy_manager.risk import RiskEngine
 
 class StrategyRunner:
     def __init__(self):
