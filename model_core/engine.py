@@ -153,14 +153,14 @@ class AlphaEngine:
             seqs = torch.stack(tokens_list, dim=1)
             
             rewards = torch.zeros(bs, device=ModelConfig.DEVICE)
-            rewards = torch.zeros(bs, device=ModelConfig.DEVICE)
             invalid = 0
             lowvar = 0
             reason_hist = {}
             bad_examples = []
             for i in range(bs):
                 formula = seqs[i].tolist()
-                res, info  = self.vm.execute(seqs[i].tolist(), self.loader.feat_tensor)
+                res, info   = self.vm.execute(formula, self.loader.feat_tensor)
+                # res, info  = self.vm.execute(seqs[i].tolist(), self.loader.feat_tensor)
                 if res is None:
                     invalid += 1
                     r = info.get("reason", "unknown")
