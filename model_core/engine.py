@@ -10,6 +10,8 @@ from model_core.data_loader import CryptoDataLoader
 from model_core.alphagpt import AlphaGPT, NewtonSchulzLowRankDecay, StableRankMonitor
 from model_core.vm import StackVM
 from model_core.backtest import MemeBacktest
+from utils import cuda_snapshot, dict_tensors_snapshot
+
 
 class AlphaEngine:
     def __init__(self, use_lord_regularization=True, lord_decay_rate=1e-3, lord_num_iterations=5):
@@ -24,14 +26,16 @@ class AlphaEngine:
         '''self.loader = CryptoDataLoader()
         self.loader.load_data()'''
         cfg = CsvLoaderConfig(
-            csv_paths=["./data/your_klines.csv"],  # 改成你的路径
+            csv_paths=["../data/futures_um_monthly_klines_ETHUSDT_5m_0_53.csv"],  # 改成你的路径
             device=ModelConfig.DEVICE,
             max_symbols=50,  # 你可以先小一点试跑
             liquidity_mode="quote_volume",
         )
+        # cuda_snapshot("engine::__init__::start", ModelConfig.DEVICE)
         self.loader = CsvCryptoDataLoader(cfg).load_data()
-        
+        # cuda_snapshot("engine::__init__::after_load_data", ModelConfig.DEVICE)
         self.model = AlphaGPT().to(ModelConfig.DEVICE)
+        # cuda_snapshot("engine::__init__::after_model_to", ModelConfig.DEVICE)
         expected_vocab = FeatureEngineer.INPUT_DIM + len(OPS_CONFIG)
         if getattr(self.model, "vocab_size", None) != expected_vocab:
             raise ValueError(
@@ -132,7 +136,9 @@ class AlphaEngine:
 
             depth = torch.zeros(bs, dtype=torch.long, device=ModelConfig.DEVICE)
             for step_in_formula in range(ModelConfig.MAX_FORMULA_LEN):
+                # cuda_snapshot("train::before_first_forward", ModelConfig.DEVICE, extra=f"inp={tuple(inp.shape)}")
                 logits, _, _ = self.model(inp)  # [B, V]
+                # cuda_snapshot("train::after_first_forward", ModelConfig.DEVICE, extra=f"logits={tuple(logits.shape)}")
                 mask = self._build_strict_mask_rpn(depth, step_in_formula)  # [B, V]
                 dist = Categorical(logits=logits + mask)
                 action = dist.sample()

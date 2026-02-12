@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 import pandas as pd
 import torch
+from model_core.config import ModelConfig
 from factors import FeatureEngineer
+from utils import cuda_snapshot, dict_tensors_snapshot, tensor_nbytes, _fmt_bytes
 
 
 @dataclass
@@ -34,6 +36,11 @@ class CsvCryptoDataLoader:
 
     def load_data(self):
         df = self._read_and_concat(self.cfg.csv_paths)
+        if "symbol" not in df.columns:
+            df["symbol"] = "ETHUSDT"
+
+        '''torch.cuda.reset_peak_memory_stats(ModelConfig.DEVICE.index or 0)
+        cuda_snapshot("load_data::start", ModelConfig.DEVICE)'''
 
         # ---- 标准化列名/生成 time/address ----
         # 用 symbol 代替 address（对中心化交易所足够唯一）
@@ -93,9 +100,16 @@ class CsvCryptoDataLoader:
 
         self.raw_data_cache = raw
 
+        '''df_mem = int(df.memory_usage(deep=True).sum())
+        print(f"[DF] rows={len(df):,} cols={len(df.columns)} df_mem={_fmt_bytes(df_mem)}")
+        print(f"[DF] columns={list(df.columns)}")
+        cuda_snapshot("load_data::after_df", ModelConfig.DEVICE)
+        dict_tensors_snapshot("raw_data_cache", self.raw_data_cache, device=ModelConfig.DEVICE)'''
+
         # ---- 生成 6维特征 ----
         self.feat_tensor = FeatureEngineer.compute_features(self.raw_data_cache)
-
+        '''cuda_snapshot("after_feat_tensor", ModelConfig.DEVICE,
+                      extra=f"feat_shape={tuple(self.feat_tensor.shape)} size={_fmt_bytes(tensor_nbytes(self.feat_tensor))}")'''
         # ---- 生成 target_ret（与原 loader 类似：open-to-open）----
         open_ = self.raw_data_cache["open"]
         # 用 shift，不用 roll（避免 wrap-around）
@@ -107,6 +121,9 @@ class CsvCryptoDataLoader:
             target[:, -2:] = 0.0
         self.target_ret = target
 
+        # cuda_snapshot("after_target_ret", ModelConfig.DEVICE, extra=f"target_shape={tuple(self.target_ret.shape)} size={_fmt_bytes(tensor_nbytes(self.target_ret))}")
+
+        # print(f"Data Ready. Shape: {self.feat_tensor.shape}")
         return self
         # end load_data
 
