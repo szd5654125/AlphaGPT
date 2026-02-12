@@ -153,31 +153,42 @@ class AlphaEngine:
             seqs = torch.stack(tokens_list, dim=1)
             
             rewards = torch.zeros(bs, device=ModelConfig.DEVICE)
+            rewards = torch.zeros(bs, device=ModelConfig.DEVICE)
             invalid = 0
+            lowvar = 0
+            reason_hist = {}
+            bad_examples = []
             for i in range(bs):
-                res = self.vm.execute(seqs[i].tolist(), self.loader.feat_tensor)
+                formula = seqs[i].tolist()
+                res, info  = self.vm.execute(seqs[i].tolist(), self.loader.feat_tensor)
                 if res is None:
                     invalid += 1
-                formula = seqs[i].tolist()
-                
-                res = self.vm.execute(formula, self.loader.feat_tensor)
-                
-                if res is None:
+                    r = info.get("reason", "unknown")
+                    reason_hist[r] = reason_hist.get(r, 0) + 1
                     rewards[i] = -5.0
+
+                    if len(bad_examples) < 3:
+                        bad_examples.append({"formula": formula, "info": info})
                     continue
-                
+                formula = seqs[i].tolist()
+
                 if res.std() < 1e-4:
+                    lowvar += 1
                     rewards[i] = -2.0
                     continue
                 
                 score, ret_val = self.bt.evaluate(res, self.loader.raw_data_cache, self.loader.target_ret)
                 rewards[i] = score
-                
+
                 if score.item() > self.best_score:
                     self.best_score = score.item()
                     self.best_formula = formula
                     tqdm.write(f"[!] New King: Score {score:.2f} | Ret {ret_val:.2%} | Formula {formula}")
-            tqdm.write(f"InvalidRatio={invalid / bs:.2%}")
+            tqdm.write(
+                f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | Reasons={reason_hist}"
+            )
+            if bad_examples:
+                tqdm.write(f"BadExamples={bad_examples}")
             # Normalize rewards
             adv = (rewards - rewards.mean()) / (rewards.std() + 1e-5)
             
