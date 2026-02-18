@@ -6,11 +6,9 @@ from model_core.factors import FeatureEngineer
 from model_core.ops import OPS_CONFIG
 from model_core.config import ModelConfig
 from model_core.data_loader_csv import CsvCryptoDataLoader, CsvLoaderConfig
-from model_core.data_loader import CryptoDataLoader
 from model_core.alphagpt import AlphaGPT, NewtonSchulzLowRankDecay, StableRankMonitor
 from model_core.vm import StackVM
 from model_core.backtest import MemeBacktest
-from utils import cuda_snapshot, dict_tensors_snapshot
 
 
 class AlphaEngine:

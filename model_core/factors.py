@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn
 from utils import shift1
+from model_core.config import FEATURE_PM1_SPECS
+
+
+_EPS = 1e-6
 
 
 class RMSNormFactor(nn.Module):
@@ -26,7 +30,7 @@ class MemeIndicators:
         range_hl = high - low + 1e-9
         body = close - open_
         strength = body / range_hl
-        return torch.tanh(strength * 3.0)
+        return (strength * 3.0) / (1.0 + torch.abs(strength * 3.0))
 
     @staticmethod
     def fomo_acceleration(volume, window=5):
@@ -88,74 +92,73 @@ class MemeIndicators:
         rs = (avg_gain + 1e-9) / (avg_loss + 1e-9)
         rsi = 100 - (100 / (1 + rs))
         
-        return (rsi - 50) / 50  # Normalize
+        return rsi  # [0, 100]
 
 
-class AdvancedFactorEngineer:
-    """Advanced feature engineering with multiple factor types"""
-    def __init__(self):
-        self.rms_norm = RMSNormFactor(1)
-    
-    def robust_norm(self, t):
-        """Robust normalization using median absolute deviation"""
-        median = torch.nanmedian(t, dim=1, keepdim=True)[0]
-        mad = torch.nanmedian(torch.abs(t - median), dim=1, keepdim=True)[0] + 1e-6
-        norm = (t - median) / mad
-        return torch.clamp(norm, -5.0, 5.0)
-    
-    def compute_advanced_features(self, raw_dict):
-        """Compute 12-dimensional feature space with advanced factors"""
-        c = raw_dict['close']
-        o = raw_dict['open']
-        h = raw_dict['high']
-        l = raw_dict['low']
-        v = raw_dict['volume']
-        liq = raw_dict['liquidity']
-        fdv = raw_dict['fdv']
-        
-        # Basic factors
-        ret = torch.log(c / (shift1(c, fill=0.0) + 1e-9))
-        liq_score = MemeIndicators.liquidity_health(liq, fdv)
-        pressure = MemeIndicators.buy_sell_imbalance(c, o, h, l)
-        fomo = MemeIndicators.fomo_acceleration(v)
-        dev = MemeIndicators.pump_deviation(c)
-        log_vol = torch.log1p(v)
-        
-        # Advanced factors
-        vol_cluster = MemeIndicators.volatility_clustering(c)
-        momentum_rev = MemeIndicators.momentum_reversal(c)
-        rel_strength = MemeIndicators.relative_strength(c, h, l)
-        
-        # High-low range
-        hl_range = (h - l) / (c + 1e-9)
-        
-        # Close position in range
-        close_pos = (c - l) / (h - l + 1e-9)
-        
-        # Volume trend
-        vol_prev = shift1(v, fill=0.0)
-        vol_trend = (v - vol_prev) / (vol_prev + 1.0)
-        
-        features = torch.stack([
-            self.robust_norm(ret),
-            liq_score,
-            pressure,
-            self.robust_norm(fomo),
-            self.robust_norm(dev),
-            self.robust_norm(log_vol),
-            self.robust_norm(vol_cluster),
-            momentum_rev,
-            self.robust_norm(rel_strength),
-            self.robust_norm(hl_range),
-            close_pos,
-            self.robust_norm(vol_trend)
-        ], dim=1)
-        
-        return features
+def _pm1_from_z(z: torch.Tensor) -> torch.Tensor:
+    """Map roughly-unbounded z to [-1,1] with tanh; scale controls saturation speed."""
+    return z / (1.0 + torch.abs(z))
+
+
+def _pm1_from_01(x: torch.Tensor) -> torch.Tensor:
+    """Map [0,1] -> [-1,1]."""
+    return torch.clamp(x * 2.0 - 1.0, -1.0, 1.0)
+
+
+def _pm1_from_0_100(x: torch.Tensor) -> torch.Tensor:
+    """Map [0,100] -> [-1,1] (e.g., RSI)."""
+    return torch.clamp((x - 50.0) / 50.0, -1.0, 1.0)
+
+
+def _pm1_from_neg100_100(x: torch.Tensor) -> torch.Tensor:
+    """Map [-100,100] -> [-1,1] (e.g., some oscillators)."""
+    return torch.clamp(x / 100.0, -1.0, 1.0)
+
+
+def robust_norm(t, clamp= 5.0, eps= _EPS):
+    """
+    Median/MAD robust z-score, per-sample along time dim=1.
+    Returns z in [-clamp, clamp].
+    """
+    median = torch.nanmedian(t, dim=1, keepdim=True)[0]
+    mad = torch.nanmedian(torch.abs(t - median), dim=1, keepdim=True)[0] + eps
+    z = (t - median) / mad
+    return torch.clamp(z, -clamp, clamp)
+
+
+def normalize_feature(name: str, x: torch.Tensor) -> torch.Tensor:
+    """
+    统一把特征映射到 [-1,1]。规则来自 FEATURE_PM1_SPECS。
+    """
+    spec = FEATURE_PM1_SPECS.get(name)
+    if spec is None:
+        raise KeyError(f"[feature_scaling] missing spec for: {name}")
+
+    kind = spec["kind"]
+    if kind == "robust_z_softsign":
+        return _pm1_from_z(robust_norm(x))
+
+    if kind == "bounded_01":
+        return _pm1_from_01(x)
+
+    if kind == "identity_pm1":
+        return torch.clamp(x, -1.0, 1.0)
+
+    if kind == "binary_sign":
+        # 这里假设你传入的已经是 {-1,+1}
+        return torch.clamp(x, -1.0, 1.0)
+
+    if kind == "bounded_0_100":
+        return _pm1_from_0_100(x)
+
+    if kind == "bounded_neg100_100":
+        return _pm1_from_neg100_100(x)
+
+    raise ValueError(f"[feature_scaling] unknown kind={kind} for feature={name}")
 
 
 class FeatureEngineer:
-    INPUT_DIM = 6
+    INPUT_DIM = len(FEATURE_PM1_SPECS)
 
     @staticmethod
     def compute_features(raw_dict):
@@ -166,27 +169,30 @@ class FeatureEngineer:
         v = raw_dict['volume']
         liq = raw_dict['liquidity']
         fdv = raw_dict['fdv']
-        
-        ret = torch.log(c / (shift1(c, fill=0.0) + 1e-9))
-        liq_score = MemeIndicators.liquidity_health(liq, fdv)
-        pressure = MemeIndicators.buy_sell_imbalance(c, o, h, l)
-        fomo = MemeIndicators.fomo_acceleration(v)
-        dev = MemeIndicators.pump_deviation(c)
-        log_vol = torch.log1p(v)
-        
-        def robust_norm(t):
-            median = torch.nanmedian(t, dim=1, keepdim=True)[0]
-            mad = torch.nanmedian(torch.abs(t - median), dim=1, keepdim=True)[0] + 1e-6
-            norm = (t - median) / mad
-            return torch.clamp(norm, -5.0, 5.0)
 
-        features = torch.stack([
-            robust_norm(ret),
-            liq_score,
-            pressure,
-            robust_norm(fomo),
-            robust_norm(dev),
-            robust_norm(log_vol)
-        ], dim=1)
+          # 1) 先把“可能会用到”的 raw 特征都算出来
+        raw = {}
+        raw["ret"] = torch.log(c / (shift1(c, fill=0.0) + 1e-9))
+        raw["liq_score"] = MemeIndicators.liquidity_health(liq, fdv)
+        raw["pressure"] = MemeIndicators.buy_sell_imbalance(c, o, h, l)
+        raw["fomo"] = MemeIndicators.fomo_acceleration(v)
+        raw["dev"] = MemeIndicators.pump_deviation(c)
+        raw["log_vol"] = torch.log1p(v)
+
+        # advanced 可选（如果 FEATURE_KEYS 里启用了这些 key，就需要它们存在）
+        raw["vol_cluster"] = MemeIndicators.volatility_clustering(c)
+        raw["momentum_rev"] = MemeIndicators.momentum_reversal(c)
+        raw["rel_strength"] = MemeIndicators.relative_strength(c, h, l)
+        raw["hl_range"] = (h - l) / (c + 1e-9)
+        raw["close_pos"] = (c - l) / (h - l + 1e-9)
+        vol_prev = shift1(v, fill=0.0)
+        raw["vol_trend"] = (v - vol_prev) / (vol_prev + 1.0)
+        raw["mom_sign"] = torch.where(raw["ret"] >= 0, torch.ones_like(raw["ret"]), -torch.ones_like(raw["ret"]))
+        # 2) 按配置选择通道并 normalize
+        missing = [k for k in FEATURE_PM1_SPECS if k not in raw]
+        if missing:
+            raise KeyError(f"[FeatureEngineer] missing raw features for keys: {missing}")
+
+        features = torch.stack([normalize_feature(k, raw[k]) for k in FEATURE_PM1_SPECS], dim = 1)
         
         return features
