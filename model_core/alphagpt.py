@@ -250,6 +250,8 @@ class AlphaGPT(nn.Module):
         self.mtp_head = MTPHead(self.d_model, self.vocab_size, num_tasks=3)
         self.head_critic = nn.Linear(self.d_model, 1)
 
+        self.thr_head = nn.Linear(self.d_model, len(ModelConfig.THRESH_BINS))
+
     def forward(self, idx):
         # idx: [Batch, SeqLen]
         B, T = idx.size()
@@ -268,5 +270,7 @@ class AlphaGPT(nn.Module):
         # Multi-task pooling head for logits
         logits, task_probs = self.mtp_head(last_emb)
         value = self.head_critic(last_emb)
-        
-        return logits, value, task_probs
+
+        thr_logits = self.thr_head(last_emb)
+
+        return logits, value, task_probs, thr_logits

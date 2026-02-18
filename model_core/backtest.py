@@ -6,11 +6,11 @@ class MemeBacktest:
         self.min_liq = 500000.0
         self.base_fee = 0.0060
 
-    def evaluate(self, factors, raw_data, target_ret):
+    def evaluate(self, factors, raw_data, target_ret, threshold):
         liquidity = raw_data['liquidity']
         signal = torch.sigmoid(factors)
         is_safe = (liquidity > self.min_liq).float()
-        position = (signal > 0.85).float() * is_safe
+        position = (signal > float(threshold)).float() * is_safe
         impact_slippage = self.trade_size / (liquidity + 1e-9)
         impact_slippage = torch.clamp(impact_slippage, 0.0, 0.05)
         total_slippage_one_way = self.base_fee + impact_slippage
@@ -26,4 +26,6 @@ class MemeBacktest:
         activity = position.sum(dim=1)
         score = torch.where(activity < 5, torch.tensor(-10.0, device=score.device), score)
         final_fitness = torch.median(score)
-        return final_fitness, cum_ret.mean().item()
+        details = {"activity_median": torch.median(activity).item(), "turnover_mean": turnover.mean().item(),
+                   "turnover_sum_mean": turnover.sum(dim=1).float().mean().item()}
+        return final_fitness, cum_ret.mean().item(), details

@@ -68,6 +68,7 @@ class AlphaEngine:
         
         self.best_score = -float('inf')
         self.best_formula = None
+        self.best_threshold = None
         self.training_history = {
             'step': [],
             'avg_reward': [],
@@ -131,18 +132,18 @@ class AlphaEngine:
             bs = ModelConfig.BATCH_SIZE
             inp = torch.zeros((bs, 1), dtype=torch.long, device=ModelConfig.DEVICE)
             
-            log_probs = []
+            log_probs_tokens = []
             tokens_list = []
 
             depth = torch.zeros(bs, dtype=torch.long, device=ModelConfig.DEVICE)
             for step_in_formula in range(ModelConfig.MAX_FORMULA_LEN):
                 # cuda_snapshot("train::before_first_forward", ModelConfig.DEVICE, extra=f"inp={tuple(inp.shape)}")
-                logits, _, _ = self.model(inp)  # [B, V]
+                logits, _, _, _ = self.model(inp)  # [B, V]
                 # cuda_snapshot("train::after_first_forward", ModelConfig.DEVICE, extra=f"logits={tuple(logits.shape)}")
                 mask = self._build_strict_mask_rpn(depth, step_in_formula)  # [B, V]
                 dist = Categorical(logits=logits + mask)
                 action = dist.sample()
-                log_probs.append(dist.log_prob(action))
+                log_probs_tokens.append(dist.log_prob(action))
                 tokens_list.append(action)
                 inp = torch.cat([inp, action.unsqueeze(1)], dim=1)
                 # 更新栈深度
@@ -151,6 +152,13 @@ class AlphaEngine:
                 depth = torch.where(is_feat, depth + 1, depth - arity + 1)
             
             seqs = torch.stack(tokens_list, dim=1)
+            _, _, _, thr_logits = self.model(inp)  # [B, n_thr]
+            thr_dist = Categorical(logits=thr_logits)
+            thr_idx = thr_dist.sample()  # [B]
+            logp_thr = thr_dist.log_prob(thr_idx)  # [B]
+            thr_bins = torch.tensor(ModelConfig.THRESH_BINS, device=ModelConfig.DEVICE,
+                                                 dtype=torch.float32)
+            thr_val = thr_bins[thr_idx]  # [B]
             
             rewards = torch.zeros(bs, device=ModelConfig.DEVICE)
             invalid = 0
@@ -177,26 +185,26 @@ class AlphaEngine:
                     rewards[i] = -2.0
                     continue
                 
-                score, ret_val = self.bt.evaluate(res, self.loader.raw_data_cache, self.loader.target_ret)
+                score, ret_val = self.bt.evaluate(res, self.loader.raw_data_cache, self.loader.target_ret,
+                                                  thr_val[i].item())
                 rewards[i] = score
 
                 if score.item() > self.best_score:
                     self.best_score = score.item()
                     self.best_formula = formula
+                    self.best_threshold = float(thr_val[i].item())
                     tqdm.write(f"[!] New King: Score {score:.2f} | Ret {ret_val:.2%} | Formula {formula}")
             tqdm.write(
-                f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | Reasons={reason_hist}"
+                f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | ThrMean={thr_val.mean().item():.3f}"
             )
             if bad_examples:
                 tqdm.write(f"BadExamples={bad_examples}")
             # Normalize rewards
             adv = (rewards - rewards.mean()) / (rewards.std() + 1e-5)
             
-            loss = 0
-            for t in range(len(log_probs)):
-                loss += -log_probs[t] * adv
-            
-            loss = loss.mean()
+            logp_tokens = torch.stack(log_probs_tokens, dim=1).sum(dim=1)  # [B]
+            logp_total = logp_tokens + logp_thr  # [B]
+            loss = -(logp_total * adv).mean()
             
             # Gradient step
             self.opt.zero_grad()
@@ -224,7 +232,8 @@ class AlphaEngine:
 
         # Save best formula
         with open("best_meme_strategy.json", "w") as f:
-            json.dump(self.best_formula, f)
+            json.dump({"formula": self.best_formula, "threshold": self.best_threshold,
+                       "threshold_bins": ModelConfig.THRESH_BINS}, f, indent = 2)
         
         # Save training history
         import json as js
