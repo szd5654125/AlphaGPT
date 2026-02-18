@@ -180,10 +180,10 @@ class AlphaEngine:
 
                 if res.std() < 1e-4:
                     lowvar += 1
-                    rewards[i] = -2.0
+                    rewards[i] = -10.0
                     continue
                 
-                score, ret_val = self.bt.evaluate(res, self.loader.raw_data_cache, self.loader.target_ret,
+                score, ret_val, info = self.bt.evaluate(res, self.loader.raw_data_cache, self.loader.target_ret,
                                                   thr_val[i].item())
                 rewards[i] = score
 
@@ -192,6 +192,7 @@ class AlphaEngine:
                     self.best_formula = formula
                     self.best_threshold = float(thr_val[i].item())
                     tqdm.write(f"[!] New King: Score {score:.2f} | Ret {ret_val:.2%} | Formula {formula}")
+                    print(info)
             tqdm.write(
                 f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | ThrMean={thr_val.mean().item():.3f}"
             )
