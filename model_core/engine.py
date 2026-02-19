@@ -223,10 +223,12 @@ class AlphaEngine:
                     self.best_threshold = float(thr_val[i].item())
                     tqdm.write(f"[!] New King: Score {score:.2f} | Ret {ret_val:.2%} | Formula {formula}")
                 print(details)
-            tqdm.write(f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | "
-                       f"ThrMean={thr_val.mean().item():.3f} | LenMean={last_pos.float().mean().item():.2f} | "
-                       f"OpsMean={ops_count.float().mean().item():.2f} | EarlyStop={
-                       (last_pos < ModelConfig.MAX_FORMULA_LEN).float().mean().item():.2%}")
+            early_stop_ratio = (last_pos < ModelConfig.MAX_FORMULA_LEN).float().mean().item()
+            tqdm.write(
+                f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | "
+                f"ThrMean={thr_val.mean().item():.3f} | LenMean={last_pos.float().mean().item():.2f} | "
+                f"OpsMean={ops_count.float().mean().item():.2f} | EarlyStop={early_stop_ratio:.2%}"
+            )
             if bad_examples:
                 tqdm.write(f"BadExamples={bad_examples}")
             # Normalize rewards
