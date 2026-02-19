@@ -1,5 +1,5 @@
 import torch
-from torch.distributions import Categorical
+from torch.distributions import Categorical, Bernoulli
 from tqdm import tqdm
 import json
 from model_core.factors import FeatureEngineer
@@ -131,26 +131,52 @@ class AlphaEngine:
             inp = torch.zeros((bs, 1), dtype=torch.long, device=ModelConfig.DEVICE)
             
             log_probs_tokens = []
+            log_probs_stop = []
             tokens_list = []
 
             depth = torch.zeros(bs, dtype=torch.long, device=ModelConfig.DEVICE)
+            alive = torch.ones(bs, dtype=torch.bool, device=ModelConfig.DEVICE)
+            last_pos = torch.zeros(bs, dtype=torch.long, device=ModelConfig.DEVICE)  # in inp positions
+            ops_count = torch.zeros(bs, dtype=torch.long, device=ModelConfig.DEVICE)
+            pad_id = 0  # placeholder token id (not executed; we slice by length)
+            min_len = getattr(ModelConfig, "MIN_FORMULA_LEN", 4)
+            lam_ops = getattr(ModelConfig, "OPS_PENALTY_LAMBDA", 0.0001)
+            stop_eps = getattr(ModelConfig, "STOP_PROB_EPS", 1e-6)
             for step_in_formula in range(ModelConfig.MAX_FORMULA_LEN):
                 # cuda_snapshot("train::before_first_forward", ModelConfig.DEVICE, extra=f"inp={tuple(inp.shape)}")
-                logits, _, _, _ = self.model(inp)  # [B, V]
+                alive_before = alive
+                logits, _, _, _, stop_logit = self.model(inp)  # [B,V], [B]
                 # cuda_snapshot("train::after_first_forward", ModelConfig.DEVICE, extra=f"logits={tuple(logits.shape)}")
                 mask = self._build_strict_mask_rpn(depth, step_in_formula)  # [B, V]
                 dist = Categorical(logits=logits + mask)
-                action = dist.sample()
-                log_probs_tokens.append(dist.log_prob(action))
+                sampled = dist.sample()
+                action = torch.where(alive_before, sampled, torch.full_like(sampled, pad_id))
+                lp_tok = dist.log_prob(sampled) * alive_before.float()
+                log_probs_tokens.append(lp_tok)
                 tokens_list.append(action)
                 inp = torch.cat([inp, action.unsqueeze(1)], dim=1)
                 # 更新栈深度
                 arity = self.arity_vec[action]  # [B]
                 is_feat = (arity == 0)
-                depth = torch.where(is_feat, depth + 1, depth - arity + 1)
+                new_depth = torch.where(is_feat, depth + 1, depth - arity + 1)
+                depth = torch.where(alive_before, new_depth, depth)
+                ops_count = ops_count + (alive_before & (arity > 0)).long()
+                # 记录当前真实结束位置（action appended at position step_in_formula+1）
+                step_pos = step_in_formula + 1
+                last_pos = torch.where(alive_before, torch.full_like(last_pos, step_pos), last_pos)
+                # stop decision: only meaningful when formula is already complete (depth==1) and length>=min_len
+                can_stop = alive_before & (depth == 1) & (step_pos >= min_len)
+                p_stop = torch.sigmoid(stop_logit).clamp(stop_eps, 1.0 - stop_eps)
+                stop_dist = Bernoulli(probs=p_stop)
+                stop_sample = stop_dist.sample()
+                stop_sample = torch.where(can_stop, stop_sample, torch.zeros_like(stop_sample))
+                lp_stop = stop_dist.log_prob(stop_sample) * can_stop.float()
+                log_probs_stop.append(lp_stop)
+                do_stop = can_stop & (stop_sample.bool())
+                alive = alive_before & (~do_stop)
             
-            seqs = torch.stack(tokens_list, dim=1)
-            _, _, _, thr_logits = self.model(inp)  # [B, n_thr]
+            seqs = torch.stack(tokens_list, dim=1)  # [B, MAX_LEN]
+            _, _, _, thr_logits, _ = self.model(inp, last_positions=last_pos)  # [B, n_thr]
             thr_dist = Categorical(logits=thr_logits)
             thr_idx = thr_dist.sample()  # [B]
             logp_thr = thr_dist.log_prob(thr_idx)  # [B]
@@ -164,7 +190,8 @@ class AlphaEngine:
             reason_hist = {}
             bad_examples = []
             for i in range(bs):
-                formula = seqs[i].tolist()
+                L = int(last_pos[i].item())
+                formula = seqs[i, :L].tolist()
                 res, info   = self.vm.execute(formula, self.loader.feat_tensor)
                 # res, info  = self.vm.execute(seqs[i].tolist(), self.loader.feat_tensor)
                 if res is None:
@@ -182,26 +209,31 @@ class AlphaEngine:
                     lowvar += 1
                     rewards[i] = -2.0
                     continue
-                
-                score, ret_val = self.bt.evaluate(res, self.loader.raw_data_cache, self.loader.target_ret,
-                                                  thr_val[i].item())
-                rewards[i] = score
+
+                score, ret_val, details = self.bt.evaluate(
+                    res, self.loader.raw_data_cache, self.loader.target_ret, thr_val[i].item()
+                )
+                # length penalty: reward -= λ * (#ops)
+                penalty = lam_ops * float(ops_count[i].item())
+                rewards[i] = score - torch.tensor(penalty, device=rewards.device, dtype=rewards.dtype)
 
                 if score.item() > self.best_score:
                     self.best_score = score.item()
                     self.best_formula = formula
                     self.best_threshold = float(thr_val[i].item())
                     tqdm.write(f"[!] New King: Score {score:.2f} | Ret {ret_val:.2%} | Formula {formula}")
-            tqdm.write(
-                f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | ThrMean={thr_val.mean().item():.3f}"
-            )
+            tqdm.write(f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | "
+                       f"ThrMean={thr_val.mean().item():.3f} | LenMean={last_pos.float().mean().item():.2f} | "
+                       f"OpsMean={ops_count.float().mean().item():.2f} | EarlyStop={
+                       (last_pos < ModelConfig.MAX_FORMULA_LEN).float().mean().item():.2%}")
             if bad_examples:
                 tqdm.write(f"BadExamples={bad_examples}")
             # Normalize rewards
             adv = (rewards - rewards.mean()) / (rewards.std() + 1e-5)
             
             logp_tokens = torch.stack(log_probs_tokens, dim=1).sum(dim=1)  # [B]
-            logp_total = logp_tokens + logp_thr  # [B]
+            logp_stop_total = torch.stack(log_probs_stop, dim=1).sum(dim=1)  # [B]
+            logp_total = logp_tokens + logp_stop_total + logp_thr  # [B]
             loss = -(logp_total * adv).mean()
             
             # Gradient step

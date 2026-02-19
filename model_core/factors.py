@@ -192,7 +192,5 @@ class FeatureEngineer:
         missing = [k for k in FEATURE_PM1_SPECS if k not in raw]
         if missing:
             raise KeyError(f"[FeatureEngineer] missing raw features for keys: {missing}")
-
         features = torch.stack([normalize_feature(k, raw[k]) for k in FEATURE_PM1_SPECS], dim = 1)
-        
         return features

@@ -251,8 +251,9 @@ class AlphaGPT(nn.Module):
         self.head_critic = nn.Linear(self.d_model, 1)
 
         self.thr_head = nn.Linear(self.d_model, len(ModelConfig.THRESH_BINS))
+        self.stop_head = nn.Linear(self.d_model, 1)  # independent stop head
 
-    def forward(self, idx):
+    def forward(self, idx, last_positions=None):
         # idx: [Batch, SeqLen]
         B, T = idx.size()
         
@@ -264,13 +265,20 @@ class AlphaGPT(nn.Module):
         # Process through looped transformer
         x = self.blocks(x, mask=mask, is_causal=True)
         x = self.ln_f(x)
-        
-        last_emb = x[:, -1, :]
+
+
+        if last_positions is None:
+            last_emb = x[:, -1, :]
+        else:
+        # last_positions: [B] positions inside sequence [0..T-1]
+            ar = torch.arange(B, device=idx.device)
+            last_emb = x[ar, last_positions, :]
         
         # Multi-task pooling head for logits
         logits, task_probs = self.mtp_head(last_emb)
         value = self.head_critic(last_emb)
 
         thr_logits = self.thr_head(last_emb)
+        stop_logit = self.stop_head(last_emb).squeeze(-1)  # [B]
 
-        return logits, value, task_probs, thr_logits
+        return logits, value, task_probs, thr_logits, stop_logit
