@@ -24,7 +24,7 @@ class AlphaEngine:
         '''self.loader = CryptoDataLoader()
         self.loader.load_data()'''
         cfg = CsvLoaderConfig(
-            csv_paths=["../data/futures_um_monthly_klines_ETHUSDT_5m_0_53.csv"],  # 改成你的路径
+            csv_paths=["data/futures_um_monthly_klines_ETHUSDT_5m_0_53.csv"],  # 改成你的路径
             device=ModelConfig.DEVICE,
             max_symbols=50,  # 你可以先小一点试跑
             liquidity_mode="quote_volume",

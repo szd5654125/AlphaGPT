@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import torch
 from model_core.config import ModelConfig
-from factors import FeatureEngineer
+from model_core.factors import FeatureEngineer
 from utils import cuda_snapshot, dict_tensors_snapshot, tensor_nbytes, _fmt_bytes
 
 
