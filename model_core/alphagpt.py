@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from model_core.config import ModelConfig
+from model_core.config import ModelConfig, FEATURE_PM1_SPECS
 from model_core.ops import OPS_CONFIG
 
 
@@ -223,7 +223,7 @@ class AlphaGPT(nn.Module):
         super().__init__()
         self.d_model = 64
         # self.features_list = ['RET', 'VOL', 'V_CHG', 'PV', 'TREND']
-        self.features_list = ["RET", "LIQ_SCORE", "PRESSURE", "FOMO", "DEV", "LOG_VOL"]
+        self.features_list = list(FEATURE_PM1_SPECS.keys())
         self.ops_list = [cfg[0] for cfg in OPS_CONFIG]
         
         self.vocab = self.features_list + self.ops_list
