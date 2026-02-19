@@ -56,3 +56,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+data
+model_core/best_meme_strategy.json
+model_core/training_history.json
