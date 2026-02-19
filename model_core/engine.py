@@ -222,7 +222,7 @@ class AlphaEngine:
                     self.best_formula = formula
                     self.best_threshold = float(thr_val[i].item())
                     tqdm.write(f"[!] New King: Score {score:.2f} | Ret {ret_val:.2%} | Formula {formula}")
-                print(details)
+                    print(details)
             early_stop_ratio = (last_pos < ModelConfig.MAX_FORMULA_LEN).float().mean().item()
             tqdm.write(
                 f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | "

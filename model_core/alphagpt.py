@@ -261,14 +261,8 @@ class AlphaGPT(nn.Module):
         
         # Causal Mask
         mask = nn.Transformer.generate_square_subsequent_mask(T).to(idx.device)
-        
-        # Process through looped transformer
-        # NOTE:
-        # We already pass an explicit causal ``attn_mask`` above. Passing
-        # ``is_causal=True`` at the same time can trigger CUDA-side failures on
-        # some PyTorch versions/drivers (CUBLAS_STATUS_INVALID_VALUE in
-        # multi_head_attention_forward). Keep a single source of causality here.
-        x = self.blocks(x, mask=mask, is_causal=False)
+
+        x = self.blocks(x, mask=mask, is_causal=True)
         x = self.ln_f(x)
 
 
