@@ -209,7 +209,6 @@ class AlphaEngine:
                     if len(bad_examples) < 3:
                         bad_examples.append({"formula": formula, "info": info})
                     continue
-                formula = seqs[i].tolist()
 
                 if res.std() < 1e-4:
                     lowvar += 1
