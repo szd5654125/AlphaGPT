@@ -1,7 +1,7 @@
 import pandas as pd
 import torch
 import sqlalchemy
-from model_core.config import ModelConfig
+from config.general_config import ModelConfig
 from model_core.factors import FeatureEngineer
 
 class CryptoDataLoader:

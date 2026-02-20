@@ -5,7 +5,7 @@ from tqdm import tqdm
 import json
 from model_core.factors import FeatureEngineer
 from model_core.ops import OPS_CONFIG
-from model_core.config import ModelConfig
+from config.general_config import ModelConfig
 from model_core.data_loader_csv import CsvCryptoDataLoader, CsvLoaderConfig
 from model_core.alphagpt import AlphaGPT, NewtonSchulzLowRankDecay, StableRankMonitor
 from model_core.vm import StackVM

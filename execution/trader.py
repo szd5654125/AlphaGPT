@@ -2,7 +2,7 @@ import asyncio
 from loguru import logger
 from solders.pubkey import Pubkey
 from solana.rpc.types import TokenAccountOpts
-from execution.config import ExecutionConfig
+from config.general_config import ExecutionConfig
 from execution.rpc_handler import QuickNodeClient
 from execution.jupiter import JupiterAggregator
 

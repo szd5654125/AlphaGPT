@@ -1,6 +1,6 @@
 from solana.rpc.async_api import AsyncClient
 from solders.pubkey import Pubkey
-from execution.config import ExecutionConfig
+from config.general_config import ExecutionConfig
 import torch
 
 

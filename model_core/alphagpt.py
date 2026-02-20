@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from model_core.config import ModelConfig, FEATURE_PM1_SPECS
+from config.general_config import ModelConfig, FEATURE_PM1_SPECS
 from model_core.ops import OPS_CONFIG
 
 

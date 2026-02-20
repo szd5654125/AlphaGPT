@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 from loguru import logger
-from data_pipeline.config import Config
+from config.general_config import DatabaseConfig
 from data_pipeline.db_manager import DBManager
 from data_pipeline.providers.birdeye import BirdeyeProvider
 from data_pipeline.providers.dexscreener import DexScreenerProvider
@@ -21,7 +21,7 @@ class DataManager:
 
     async def pipeline_sync_daily(self):
         logger.info("Step 1: Discovering trending tokens...")
-        limit = 500 if Config.BIRDEYE_IS_PAID else 100
+        limit = 500 if DatabaseConfig.BIRDEYE_IS_PAID else 100
         candidates = await self.birdeye.get_trending_tokens(limit=limit)
         
         logger.info(f"Raw candidates found: {len(candidates)}")
@@ -31,9 +31,9 @@ class DataManager:
             liq = t.get('liquidity', 0)
             fdv = t.get('fdv', 0)
             
-            if liq < Config.MIN_LIQUIDITY_USD: continue
-            if fdv < Config.MIN_FDV: continue
-            if fdv > Config.MAX_FDV: continue # 剔除像 WIF/BONK 这种巨无霸，专注于早期高成长
+            if liq < DatabaseConfig.MIN_LIQUIDITY_USD: continue
+            if fdv < DatabaseConfig.MIN_FDV: continue
+            if fdv > DatabaseConfig.MAX_FDV: continue # 剔除像 WIF/BONK 这种巨无霸，专注于早期高成长
             
             selected_tokens.append(t)
             
@@ -43,7 +43,7 @@ class DataManager:
             logger.warning("No tokens passed the filter. Relax constraints in Config.")
             return
 
-        db_tokens = [(t['address'], t['symbol'], t['name'], t['decimals'], Config.CHAIN) for t in selected_tokens]
+        db_tokens = [(t['address'], t['symbol'], t['name'], t['decimals'], DatabaseConfig.CHAIN) for t in selected_tokens]
         await self.db.upsert_tokens(db_tokens)
 
         logger.info(f"Step 4: Fetching OHLCV for {len(selected_tokens)} tokens...")

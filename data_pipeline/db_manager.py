@@ -1,6 +1,6 @@
 import asyncpg
 from loguru import logger
-from data_pipeline.config import Config
+from config.general_config import DatabaseConfig
 
 class DBManager:
     def __init__(self):
@@ -8,7 +8,7 @@ class DBManager:
 
     async def connect(self):
         if not self.pool:
-            self.pool = await asyncpg.create_pool(dsn=Config.DB_DSN)
+            self.pool = await asyncpg.create_pool(dsn=DatabaseConfig.DB_DSN)
             logger.info("Database connection established.")
 
     async def close(self):

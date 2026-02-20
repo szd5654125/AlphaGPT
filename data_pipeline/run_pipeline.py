@@ -1,10 +1,10 @@
 import asyncio
 from loguru import logger
 from data_pipeline.data_manager import DataManager
-from data_pipeline.config import Config
+from config.general_config import DatabaseConfig
 
 async def main():
-    if not Config.BIRDEYE_API_KEY:
+    if not DatabaseConfig.BIRDEYE_API_KEY:
         logger.error("BIRDEYE_API_KEY is missing in .env")
         return
 

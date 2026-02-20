@@ -2,7 +2,7 @@ import aiohttp
 import base64
 from loguru import logger
 from solders.transaction import VersionedTransaction
-from execution.config import ExecutionConfig
+from config.general_config import ExecutionConfig
 
 class JupiterAggregator:
     def __init__(self):

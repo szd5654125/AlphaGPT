@@ -1,6 +1,6 @@
 from loguru import logger
 from data_pipeline.providers.base import DataProvider
-from data_pipeline.config import Config
+from config.general_config import DatabaseConfig
 
 class DexScreenerProvider(DataProvider):
     def __init__(self):
@@ -27,7 +27,7 @@ class DexScreenerProvider(DataProvider):
                         
                         best_pairs = {}
                         for p in pairs:
-                            if p['chainId'] != Config.CHAIN: continue
+                            if p['chainId'] != DatabaseConfig.CHAIN: continue
                             base_addr = p['baseToken']['address']
                             liq = float(p.get('liquidity', {}).get('usd', 0))
                             

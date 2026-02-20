@@ -10,7 +10,7 @@ from model_core.vm import StackVM
 from model_core.data_loader import CryptoDataLoader
 from execution.trader import SolanaTrader
 from utils import get_mint_decimals
-from strategy_manager.config import StrategyConfig
+from config.general_config import StrategyConfig
 from strategy_manager.portfolio import PortfolioManager
 from strategy_manager.risk import RiskEngine
 

@@ -2,17 +2,17 @@ import aiohttp
 import asyncio
 from datetime import datetime, timedelta
 from loguru import logger
-from data_pipeline.config import Config
+from config.general_config import DatabaseConfig
 from data_pipeline.providers.base import DataProvider
 
 class BirdeyeProvider(DataProvider):
     def __init__(self):
         self.base_url = "https://public-api.birdeye.so"
         self.headers = {
-            "X-API-KEY": Config.BIRDEYE_API_KEY,
+            "X-API-KEY": DatabaseConfig.BIRDEYE_API_KEY,
             "accept": "application/json"
         }
-        self.semaphore = asyncio.Semaphore(Config.CONCURRENCY)
+        self.semaphore = asyncio.Semaphore(DatabaseConfig.CONCURRENCY)
         
     async def get_trending_tokens(self, limit=100):
         url = f"{self.base_url}/defi/token_trending"
@@ -48,14 +48,14 @@ class BirdeyeProvider(DataProvider):
                 logger.error(f"Birdeye Trending Exception: {e}")
                 return []
 
-    async def get_token_history(self, session, address, days=Config.HISTORY_DAYS):
+    async def get_token_history(self, session, address, days=DatabaseConfig.HISTORY_DAYS):
         time_to = int(datetime.now().timestamp())
         time_from = int((datetime.now() - timedelta(days=days)).timestamp())
         
         url = f"{self.base_url}/defi/ohlcv"
         params = {
             "address": address,
-            "type": Config.TIMEFRAME,
+            "type": DatabaseConfig.TIMEFRAME,
             "time_from": time_from,
             "time_to": time_to
         }

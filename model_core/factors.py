@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from utils import shift1
-from model_core.config import FEATURE_PM1_SPECS
+from config.general_config import FEATURE_PM1_SPECS
 
 
 _EPS = 1e-6
