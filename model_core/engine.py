@@ -1,4 +1,5 @@
 import torch
+import random
 from torch.distributions import Categorical, Bernoulli
 from tqdm import tqdm
 import json
@@ -21,6 +22,11 @@ class AlphaEngine:
             lord_decay_rate: Strength of LoRD regularization
             lord_num_iterations: Number of Newton-Schulz iterations per step
         """
+        random.seed(ModelConfig.SEED)
+        torch.manual_seed(ModelConfig.SEED)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(ModelConfig.SEED)
+            torch.cuda.manual_seed_all(ModelConfig.SEED)
         '''self.loader = CryptoDataLoader()
         self.loader.load_data()'''
         cfg = CsvLoaderConfig(
@@ -139,9 +145,9 @@ class AlphaEngine:
             last_pos = torch.zeros(bs, dtype=torch.long, device=ModelConfig.DEVICE)  # in inp positions
             ops_count = torch.zeros(bs, dtype=torch.long, device=ModelConfig.DEVICE)
             pad_id = 0  # placeholder token id (not executed; we slice by length)
-            min_len = getattr(ModelConfig, "MIN_FORMULA_LEN", 4)
-            lam_ops = getattr(ModelConfig, "OPS_PENALTY_LAMBDA", 0.0001)
-            stop_eps = getattr(ModelConfig, "STOP_PROB_EPS", 1e-6)
+            min_len = ModelConfig.MIN_FORMULA_LEN
+            lam_ops = ModelConfig.OPS_PENALTY_LAMBDA
+            stop_eps = ModelConfig.STOP_PROB_EPS
             for step_in_formula in range(ModelConfig.MAX_FORMULA_LEN):
                 # cuda_snapshot("train::before_first_forward", ModelConfig.DEVICE, extra=f"inp={tuple(inp.shape)}")
                 alive_before = alive

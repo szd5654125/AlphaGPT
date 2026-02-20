@@ -4,6 +4,7 @@ import torch
 class ModelConfig:
     # DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     DEVICE = torch.device("cuda:2")
+    SEED = 1000
     DB_URL = f"postgresql://{os.getenv('DB_USER','postgres')}:{os.getenv('DB_PASSWORD','password')}@{os.getenv('DB_HOST','localhost')}:5432/{os.getenv('DB_NAME','crypto_quant')}"
     BATCH_SIZE = 2048
     TRAIN_STEPS = 1000
@@ -13,6 +14,10 @@ class ModelConfig:
     BASE_FEE = 0.005 # 基础费率 0.5% (Swap + Gas + Jito Tip)
     INPUT_DIM = 6
     THRESH_BINS = [0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.99]
+    # variable-length formula
+    MIN_FORMULA_LEN = 4  # 至少生成多少步才允许 stop
+    OPS_PENALTY_LAMBDA = 0.0001  # reward -= λ * (#ops)
+    STOP_PROB_EPS = 1e-6  # clamp stop prob for numerical stability
 
 """
 每个输入特征的统一缩放/映射规则（目标域：[-1, 1]）。
