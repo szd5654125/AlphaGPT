@@ -3,6 +3,10 @@ import random
 from torch.distributions import Categorical, Bernoulli
 import torch.nn.functional as F
 from tqdm import tqdm
+import argparse
+import subprocess
+import os
+import sys
 import json
 from model_core.factors import FeatureEngineer
 from model_core.ops import OPS_CONFIG
@@ -14,7 +18,8 @@ from model_core.backtest import MemeBacktest
 
 
 class AlphaEngine:
-    def __init__(self, use_lord_regularization=True, lord_decay_rate=1e-3, lord_num_iterations=5):
+    def __init__(self, use_lord_regularization=True, lord_decay_rate=1e-3, lord_num_iterations=5, seed=None,
+                 device=None, output_dir=".",):
         """
         Initialize AlphaGPT training engine.
         
@@ -23,24 +28,24 @@ class AlphaEngine:
             lord_decay_rate: Strength of LoRD regularization
             lord_num_iterations: Number of Newton-Schulz iterations per step
         """
-        random.seed(ModelConfig.SEED)
-        torch.manual_seed(ModelConfig.SEED)
+        self.seed = ModelConfig.SEED if seed is None else int(seed)
+        self.device = ModelConfig.DEVICE if device is None else torch.device(device)
+        self.output_dir = output_dir
+        random.seed(self.seed)
+        torch.manual_seed(self.seed)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed(ModelConfig.SEED)
-            torch.cuda.manual_seed_all(ModelConfig.SEED)
+            torch.cuda.manual_seed(self.seed)
+            torch.cuda.manual_seed_all(self.seed)
         '''self.loader = CryptoDataLoader()
         self.loader.load_data()'''
         cfg = CsvLoaderConfig(
             csv_paths=["data/futures_um_monthly_klines_ETHUSDT_5m_0_53.csv"],  # 改成你的路径
-            device=ModelConfig.DEVICE,
+            device=self.device,
             max_symbols=50,  # 你可以先小一点试跑
             liquidity_mode="quote_volume",
         )
-        # cuda_snapshot("engine::__init__::start", ModelConfig.DEVICE)
         self.loader = CsvCryptoDataLoader(cfg).load_data()
-        # cuda_snapshot("engine::__init__::after_load_data", ModelConfig.DEVICE)
-        self.model = AlphaGPT().to(ModelConfig.DEVICE)
-        # cuda_snapshot("engine::__init__::after_model_to", ModelConfig.DEVICE)
+        self.model = AlphaGPT().to(self.device)
         expected_vocab = FeatureEngineer.INPUT_DIM + len(OPS_CONFIG)
         if getattr(self.model, "vocab_size", None) != expected_vocab:
             raise ValueError(
@@ -84,7 +89,7 @@ class AlphaEngine:
         self.feat_offset = FeatureEngineer.INPUT_DIM
         self.vocab_size = self.feat_offset + len(OPS_CONFIG)
         # 每个 token 的 arity：feature=0，op=1/2/3...
-        self.arity_vec = torch.zeros(self.vocab_size, dtype=torch.long, device=ModelConfig.DEVICE)
+        self.arity_vec = torch.zeros(self.vocab_size, dtype=torch.long, device=self.device)
         for j, (_, _, arity) in enumerate(OPS_CONFIG):
             self.arity_vec[self.feat_offset + j] = arity
         # 单步最大“降栈幅度”：max(arity-1)，用于判断“剩余步数是否还能收敛到 1”
@@ -135,25 +140,23 @@ class AlphaEngine:
         
         for step in pbar:
             bs = ModelConfig.BATCH_SIZE
-            inp = torch.zeros((bs, 1), dtype=torch.long, device=ModelConfig.DEVICE)
+            inp = torch.zeros((bs, 1), dtype=torch.long, device=self.device)
             
             log_probs_tokens = []
             log_probs_stop = []
             tokens_list = []
 
-            depth = torch.zeros(bs, dtype=torch.long, device=ModelConfig.DEVICE)
-            alive = torch.ones(bs, dtype=torch.bool, device=ModelConfig.DEVICE)
-            last_pos = torch.zeros(bs, dtype=torch.long, device=ModelConfig.DEVICE)  # in inp positions
-            ops_count = torch.zeros(bs, dtype=torch.long, device=ModelConfig.DEVICE)
+            depth = torch.zeros(bs, dtype=torch.long, device=self.device)
+            alive = torch.ones(bs, dtype=torch.bool, device=self.device)
+            last_pos = torch.zeros(bs, dtype=torch.long, device=self.device)  # in inp positions
+            ops_count = torch.zeros(bs, dtype=torch.long, device=self.device)
             pad_id = 0  # placeholder token id (not executed; we slice by length)
             min_len = ModelConfig.MIN_FORMULA_LEN
             lam_ops = ModelConfig.OPS_PENALTY_LAMBDA
             stop_eps = ModelConfig.STOP_PROB_EPS
             for step_in_formula in range(ModelConfig.MAX_FORMULA_LEN):
-                # cuda_snapshot("train::before_first_forward", ModelConfig.DEVICE, extra=f"inp={tuple(inp.shape)}")
                 alive_before = alive
                 logits, _, _, _, stop_logit = self.model(inp)  # [B,V], [B]
-                # cuda_snapshot("train::after_first_forward", ModelConfig.DEVICE, extra=f"logits={tuple(logits.shape)}")
                 mask = self._build_strict_mask_rpn(depth, step_in_formula)  # [B, V]
                 dist = Categorical(logits=logits + mask)
                 sampled = dist.sample()
@@ -189,11 +192,11 @@ class AlphaEngine:
             thr_dist = Categorical(logits=thr_logits)
             thr_idx = thr_dist.sample()  # [B]
             logp_thr = thr_dist.log_prob(thr_idx)  # [B]
-            thr_bins = torch.tensor(ModelConfig.THRESH_BINS, device=ModelConfig.DEVICE,
+            thr_bins = torch.tensor(ModelConfig.THRESH_BINS, device=self.device,
                                                  dtype=torch.float32)
             thr_val = thr_bins[thr_idx]  # [B]
             
-            rewards = torch.zeros(bs, device=ModelConfig.DEVICE)
+            rewards = torch.zeros(bs, device=self.device)
             invalid = 0
             lowvar = 0
             reason_hist = {}
@@ -284,20 +287,70 @@ class AlphaEngine:
             pbar.set_postfix(postfix_dict)
 
         # Save best formula
-        with open("best_meme_strategy.json", "w") as f:
+        os.makedirs(self.output_dir, exist_ok=True)
+        strategy_file = os.path.join(self.output_dir, f"best_meme_strategy_seed{self.seed}.json")
+        with open(strategy_file, "w") as f:
             json.dump({"formula": self.best_formula, "threshold": self.best_threshold,
                        "threshold_bins": ModelConfig.THRESH_BINS}, f, indent = 2)
         
         # Save training history
         import json as js
-        with open("training_history.json", "w") as f:
+        history_file = os.path.join(self.output_dir, f"training_history_seed{self.seed}.json")
+        with open(history_file, "w") as f:
             js.dump(self.training_history, f)
         
         print(f"\n✓ Training completed!")
+        print(f"  Seed: {self.seed} | Device: {self.device}")
         print(f"  Best score: {self.best_score:.4f}")
         print(f"  Best formula: {self.best_formula}")
+        print(f"  Saved strategy to: {strategy_file}")
+        print(f"  Saved history to: {history_file}")
+
+
+def launch_multi_gpu_seed_jobs(gpu_ids, seeds, seeds_per_gpu, use_lord, output_dir):
+    if len(seeds) != len(gpu_ids) * seeds_per_gpu:
+        raise ValueError(
+            f"seeds 数量({len(seeds)}) 必须等于 GPU 数量({len(gpu_ids)}) × seeds_per_gpu({seeds_per_gpu})"
+        )
+
+    processes = []
+    for idx, seed in enumerate(seeds):
+        gpu = gpu_ids[idx // seeds_per_gpu]
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+
+        cmd = [sys.executable, __file__]
+        env["ALPHAGPT_SEED"] = str(seed)
+        env["ALPHAGPT_OUTPUT_DIR"] = str(output_dir)
+        env["ALPHAGPT_USE_LORD"] = "1" if use_lord else "0"
+
+        print(f"[launch] gpu={gpu} seed={seed} cmd={' '.join(cmd)}")
+        p = subprocess.Popen(cmd, env=env)
+        processes.append((gpu, seed, p))
+
+    for gpu, seed, p in processes:
+        rc = p.wait()
+        if rc != 0:
+            raise RuntimeError(f"seed={seed} on gpu={gpu} failed with exit code {rc}")
 
 
 if __name__ == "__main__":
-    eng = AlphaEngine(use_lord_regularization=True)
+    # 1) 允许多卡子进程通过 env 覆盖（可选）
+    env_seed = os.getenv("ALPHAGPT_SEED")
+    env_outdir = os.getenv("ALPHAGPT_OUTPUT_DIR")
+    env_use_lord = os.getenv("ALPHAGPT_USE_LORD")
+
+    seed = int(env_seed) if env_seed is not None else ModelConfig.SEED
+    output_dir = str(env_outdir) if env_outdir is not None else ModelConfig.OUTPUT_DIR
+    use_lord = (env_use_lord == "1") if env_use_lord is not None else ModelConfig.USE_LORD
+    # 2) 右键运行：由 ModelConfig 决定单卡/多卡
+    if getattr(ModelConfig, "RUN_MULTI_GPU", False):
+        launch_multi_gpu_seed_jobs(gpu_ids = ModelConfig.GPUS, seeds = ModelConfig.SEEDS,
+                                   seeds_per_gpu = ModelConfig.SEEDS_PER_GPU, use_lord = use_lord,
+                                   output_dir = output_dir)
+    else:
+        eng = AlphaEngine(use_lord_regularization = use_lord, lord_decay_rate = ModelConfig.LORD_DECAY_RATE,
+                          lord_num_iterations = ModelConfig.LORD_NUM_ITERATIONS, seed = seed,
+                          device = str(getattr(ModelConfig, "DEVICE", "cpu")),  # torch.device -> "cuda:x"
+                          output_dir = output_dir)
     eng.train()

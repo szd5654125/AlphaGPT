@@ -22,9 +22,6 @@ class DatabaseConfig:
 
 
 class ModelConfig:
-    # DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    DEVICE = torch.device("cuda:2")
-    SEED = 1003
     DB_URL = f"postgresql://{os.getenv('DB_USER','postgres')}:{os.getenv('DB_PASSWORD','password')}@{os.getenv('DB_HOST','localhost')}:5432/{os.getenv('DB_NAME','crypto_quant')}"
     BATCH_SIZE = 2048
     TRAIN_STEPS = 1000
@@ -32,15 +29,24 @@ class ModelConfig:
     TRADE_SIZE_USD = 1000.0
     MIN_LIQUIDITY = 5000.0 # 低于此流动性视为归零/无法交易
     BASE_FEE = 0.005 # 基础费率 0.5% (Swap + Gas + Jito Tip)
-    INPUT_DIM = 6
-    THRESH_BINS = [0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.99]
+    THRESH_BINS = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.99]
     # variable-length formula
     MIN_FORMULA_LEN = 4  # 至少生成多少步才允许 stop
     OPS_PENALTY_LAMBDA = 0.0001  # reward -= λ * (#ops)
     STOP_PROB_EPS = 1e-6  # clamp stop prob for numerical stability
-    # --- Actor-Critic (baseline) ---
+# --- Actor-Critic (baseline) ---
     VALUE_LOSS_COEF = 0.01      # critic loss 权重：先小一点更稳
     ADV_NORM_EPS = 1e-5        # advantage 标准化用
+    USE_LORD = True
+    LORD_DECAY_RATE = 1e-3
+    LORD_NUM_ITERATIONS = 5
+    OUTPUT_DIR = "."  # 例如 "runs/exp1"
+    # Multi-GPU run (optional)
+    RUN_MULTI_GPU = False
+    GPUS = [0, 1, 2]  # 物理 GPU id（给 CUDA_VISIBLE_DEVICES 用）
+    SEEDS = [100, 101, 102, 103, 104, 105]  # 长度需等于 len(GPUS) * SEEDS_PER_GPU
+    SEEDS_PER_GPU = 2
+    CHILD_DEVICE = "cuda:0"  # 子进程里固定用 cuda:0（由 CUDA_VISIBLE_DEVICES 映射）
 
 
 class StrategyConfig:
