@@ -1,6 +1,7 @@
 import torch
 import random
 from torch.distributions import Categorical, Bernoulli
+import torch.nn.functional as F
 from tqdm import tqdm
 import json
 from model_core.factors import FeatureEngineer
@@ -182,7 +183,9 @@ class AlphaEngine:
                 alive = alive_before & (~do_stop)
             
             seqs = torch.stack(tokens_list, dim=1)  # [B, MAX_LEN]
-            _, _, _, thr_logits, _ = self.model(inp, last_positions=last_pos)  # [B, n_thr]
+            _, value, _, thr_logits, _ = self.model(inp, last_positions=last_pos)  # [B, n_thr]
+            value = value.squeeze(-1)  # -> [B]
+
             thr_dist = Categorical(logits=thr_logits)
             thr_idx = thr_dist.sample()  # [B]
             logp_thr = thr_dist.log_prob(thr_idx)  # [B]
@@ -229,20 +232,27 @@ class AlphaEngine:
                     tqdm.write(f"[!] New King: Score {score:.2f} | Ret {ret_val:.2%} | Formula {formula}")
                     print(details)
             early_stop_ratio = (last_pos < ModelConfig.MAX_FORMULA_LEN).float().mean().item()
-            tqdm.write(
-                f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | "
-                f"ThrMean={thr_val.mean().item():.3f} | LenMean={last_pos.float().mean().item():.2f} | "
-                f"OpsMean={ops_count.float().mean().item():.2f} | EarlyStop={early_stop_ratio:.2%}"
-            )
             if bad_examples:
                 tqdm.write(f"BadExamples={bad_examples}")
-            # Normalize rewards
-            adv = (rewards - rewards.mean()) / (rewards.std() + 1e-5)
+            # --- Actor-Critic advantage with baseline ---
+            adv = rewards - value.detach()
+            adv = (adv - adv.mean()) / (adv.std() + ModelConfig.ADV_NORM_EPS)
             
             logp_tokens = torch.stack(log_probs_tokens, dim=1).sum(dim=1)  # [B]
             logp_stop_total = torch.stack(log_probs_stop, dim=1).sum(dim=1)  # [B]
             logp_total = logp_tokens + logp_stop_total + logp_thr  # [B]
-            loss = -(logp_total * adv).mean()
+            # policy loss
+            policy_loss = -(logp_total * adv).mean()
+            # critic loss（Huber 更抗 reward outlier；也可换 MSE）
+            value_loss = F.smooth_l1_loss(value, rewards)
+            loss = policy_loss + ModelConfig.VALUE_LOSS_COEF * value_loss
+
+            tqdm.write(
+                f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | "
+                f"ThrMean={thr_val.mean().item():.3f} | LenMean={last_pos.float().mean().item():.2f} | "
+                f"OpsMean={ops_count.float().mean().item():.2f} | EarlyStop={early_stop_ratio:.2%}"
+                f"step={step} ploss={policy_loss.item():.3f} vloss={value_loss.item():.3f}"
+            )
             
             # Gradient step
             self.opt.zero_grad()
@@ -255,7 +265,12 @@ class AlphaEngine:
             
             # Logging
             avg_reward = rewards.mean().item()
-            postfix_dict = {'AvgRew': f"{avg_reward:.3f}", 'BestScore': f"{self.best_score:.3f}"}
+            postfix_dict = {
+                'AvgRew': f"{avg_reward:.3f}",
+                'BestScore': f"{self.best_score:.3f}",
+                'VLoss': f"{value_loss.item():.3f}",
+                'PLoss': f"{policy_loss.item():.3f}",
+            }
             
             if self.use_lord and step % 100 == 0:
                 stable_rank = self.rank_monitor.compute()

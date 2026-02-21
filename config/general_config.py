@@ -24,7 +24,7 @@ class DatabaseConfig:
 class ModelConfig:
     # DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     DEVICE = torch.device("cuda:2")
-    SEED = 1000
+    SEED = 1003
     DB_URL = f"postgresql://{os.getenv('DB_USER','postgres')}:{os.getenv('DB_PASSWORD','password')}@{os.getenv('DB_HOST','localhost')}:5432/{os.getenv('DB_NAME','crypto_quant')}"
     BATCH_SIZE = 2048
     TRAIN_STEPS = 1000
@@ -38,6 +38,9 @@ class ModelConfig:
     MIN_FORMULA_LEN = 4  # 至少生成多少步才允许 stop
     OPS_PENALTY_LAMBDA = 0.0001  # reward -= λ * (#ops)
     STOP_PROB_EPS = 1e-6  # clamp stop prob for numerical stability
+    # --- Actor-Critic (baseline) ---
+    VALUE_LOSS_COEF = 0.01      # critic loss 权重：先小一点更稳
+    ADV_NORM_EPS = 1e-5        # advantage 标准化用
 
 
 class StrategyConfig:
