@@ -339,18 +339,9 @@ if __name__ == "__main__":
     env_seed = os.getenv("ALPHAGPT_SEED")
     env_outdir = os.getenv("ALPHAGPT_OUTPUT_DIR")
     env_use_lord = os.getenv("ALPHAGPT_USE_LORD")
-
-    seed = int(env_seed) if env_seed is not None else ModelConfig.SEED
     output_dir = str(env_outdir) if env_outdir is not None else ModelConfig.OUTPUT_DIR
     use_lord = (env_use_lord == "1") if env_use_lord is not None else ModelConfig.USE_LORD
     # 2) 右键运行：由 ModelConfig 决定单卡/多卡
-    if getattr(ModelConfig, "RUN_MULTI_GPU", False):
-        launch_multi_gpu_seed_jobs(gpu_ids = ModelConfig.GPUS, seeds = ModelConfig.SEEDS,
-                                   seeds_per_gpu = ModelConfig.SEEDS_PER_GPU, use_lord = use_lord,
-                                   output_dir = output_dir)
-    else:
-        eng = AlphaEngine(use_lord_regularization = use_lord, lord_decay_rate = ModelConfig.LORD_DECAY_RATE,
-                          lord_num_iterations = ModelConfig.LORD_NUM_ITERATIONS, seed = seed,
-                          device = str(getattr(ModelConfig, "DEVICE", "cpu")),  # torch.device -> "cuda:x"
-                          output_dir = output_dir)
-    eng.train()
+    launch_multi_gpu_seed_jobs(gpu_ids = ModelConfig.GPUS, seeds = ModelConfig.SEEDS,
+                               seeds_per_gpu = ModelConfig.SEEDS_PER_GPU, use_lord = use_lord,
+                               output_dir = output_dir)
