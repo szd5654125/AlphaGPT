@@ -192,7 +192,7 @@ class LoopedTransformerLayer(nn.Module):
         for _ in range(self.num_loops):
             # Self-attention with residual
             x_norm = self.norm1(x)
-            attn_out, _ = self.attention(x_norm, x_norm, x_norm, attn_mask=mask, is_causal=is_causal)
+            attn_out, _ = self.attention(x_norm, x_norm, x_norm, attn_mask=mask, need_weights=False)
             x = x + self.dropout(attn_out)
             
             # FFN with residual
@@ -259,10 +259,10 @@ class AlphaGPT(nn.Module):
         
         x = self.token_emb(idx) + self.pos_emb[:, :T, :]
         
-        # Causal Mask
-        mask = nn.Transformer.generate_square_subsequent_mask(T).to(idx.device)
+        # Causal mask (bool): True means "masked"
+        mask = torch.triu(torch.ones((T, T), device=idx.device, dtype=torch.bool),diagonal=1)
 
-        x = self.blocks(x, mask=mask, is_causal=True)
+        x = self.blocks(x, mask=mask, is_causal=False)
         x = self.ln_f(x)
 
 

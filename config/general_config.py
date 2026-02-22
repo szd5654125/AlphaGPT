@@ -43,8 +43,8 @@ class ModelConfig:
     OUTPUT_DIR = "."  # 例如 "runs/exp1"
     # Multi-GPU run (optional)
     GPUS = [0, 1, 2]  # 物理 GPU id（给 CUDA_VISIBLE_DEVICES 用）
-    SEEDS = [100, 101, 102, 103, 104, 105]  # 长度需等于 len(GPUS) * SEEDS_PER_GPU
-    SEEDS_PER_GPU = 2
+    SEEDS = [100, 101, 102]  # 长度需等于 len(GPUS) * SEEDS_PER_GPU
+    SEEDS_PER_GPU = 1
     CHILD_DEVICE = "cuda:0"  # 子进程里固定用 cuda:0（由 CUDA_VISIBLE_DEVICES 映射）
 
 
