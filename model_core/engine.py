@@ -3,11 +3,11 @@ import random
 from torch.distributions import Categorical, Bernoulli
 import torch.nn.functional as F
 from tqdm import tqdm
-import argparse
-import subprocess
 import os
-import sys
 import json
+import multiprocessing as mp
+import queue as _q
+import numpy as np
 from model_core.factors import FeatureEngineer
 from model_core.ops import OPS_CONFIG
 from config.general_config import ModelConfig
@@ -307,41 +307,114 @@ class AlphaEngine:
         print(f"  Saved history to: {history_file}")
 
 
-def launch_multi_gpu_seed_jobs(gpu_ids, seeds, seeds_per_gpu, use_lord, output_dir):
-    if len(seeds) != len(gpu_ids) * seeds_per_gpu:
-        raise ValueError(
-            f"seeds 数量({len(seeds)}) 必须等于 GPU 数量({len(gpu_ids)}) × seeds_per_gpu({seeds_per_gpu})"
-        )
+def train_one_seed(seed, *, device_str, use_lord, output_dir):
+    """Run one seed on the assigned device and return best score."""
+    print(f"[SeedRunner] seed={seed} device={device_str} -> start")
+    engine = AlphaEngine(seed=seed, device=device_str, use_lord_regularization=use_lord, output_dir=output_dir)
+    engine.train()
+    best = float(engine.best_score)
+    print(f"[SeedRunner] seed={seed} device={device_str} -> done, best={best:.6f}")
+    return best
 
-    processes = []
-    for idx, seed in enumerate(seeds):
-        gpu = gpu_ids[idx // seeds_per_gpu]
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
-        cmd = [sys.executable, __file__]
-        env["ALPHAGPT_SEED"] = str(seed)
-        env["ALPHAGPT_OUTPUT_DIR"] = str(output_dir)
-        env["ALPHAGPT_USE_LORD"] = "1" if use_lord else "0"
+def gpu_worker(gpu_id, seed_queue, results_dict, failures_dict, *, use_lord, output_dir):
+    """Consume seeds from queue and train them on one GPU."""
+    torch.set_num_threads(1)
+    device_str = f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.set_device(gpu_id)
+        except Exception as e:
+            print(f"[Worker-{gpu_id}] warning: set_device failed: {e}")
+        try:
+            torch.set_float32_matmul_precision('medium')
+        except Exception:
+            pass
+    print(f"[Worker-{gpu_id}] started pid={os.getpid()} device={device_str}")
 
-        print(f"[launch] gpu={gpu} seed={seed} cmd={' '.join(cmd)}")
-        p = subprocess.Popen(cmd, env=env)
-        processes.append((gpu, seed, p))
+    while True:
+        try:
+            seed = seed_queue.get_nowait()
+        except _q.Empty:
+            break
 
-    for gpu, seed, p in processes:
-        rc = p.wait()
-        if rc != 0:
-            raise RuntimeError(f"seed={seed} on gpu={gpu} failed with exit code {rc}")
+        try:
+            best = train_one_seed(seed, device_str=device_str, use_lord=use_lord, output_dir=output_dir)
+            results_dict[seed] = best
+        except Exception as exc:
+            failures_dict[seed] = str(exc)
+            print(f"[Worker-{gpu_id}] seed={seed} failed: {exc}")
+        finally:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+
+def launch_multi_gpu_seed_jobs(gpu_ids, seeds, workers_per_gpu, use_lord, output_dir):
+    """Parallel seed scheduler: queue-based multi-process workers over GPUs."""
+    if not seeds:
+        raise ValueError("SEEDS 不能为空")
+    if workers_per_gpu < 1:
+        raise ValueError(f"workers_per_gpu 必须 >= 1，当前={workers_per_gpu}")
+
+    if torch.cuda.is_available():
+        visible_gpus = list(gpu_ids)
+    else:
+        visible_gpus = [0]
+        print("[Scheduler] CUDA not available, fallback to CPU workers")
+
+    seed_queue = mp.Queue()
+    for seed in seeds:
+        seed_queue.put(seed)
+
+    manager = mp.Manager()
+    results = manager.dict()
+    failures = manager.dict()
+    procs = []
+
+    for gid in visible_gpus:
+        for _ in range(workers_per_gpu):
+            p = mp.Process(
+                target=gpu_worker,
+                args=(gid, seed_queue, results, failures),
+                kwargs={"use_lord": use_lord, "output_dir": output_dir},
+            )
+            p.start()
+            procs.append(p)
+
+    for p in procs:
+        p.join()
+
+    results = {int(k): float(v) for k, v in results.items()}
+    failures = {int(k): str(v) for k, v in failures.items()}
+
+    print("\n===== Cross-Seed Summary =====")
+    out = []
+    for seed in seeds:
+        if seed in results:
+            val = results[seed]
+            out.append((seed, val))
+            print(f"seed={seed} best={val:.6f}")
+        else:
+            err = failures.get(seed, "unknown error")
+            print(f"seed={seed} failed={err}")
+
+    valid_vals = [v for _, v in out if np.isfinite(v)]
+    if out:
+        best_seed, best_val = max(out, key=lambda x: x[1] if np.isfinite(x[1]) else -np.inf)
+        print(f"[BEST] seed={best_seed} best_score={best_val:.6f}")
+    if valid_vals:
+        print(f"[AVG] across {len(valid_vals)} seeds mean(best_score)={float(np.mean(valid_vals)):.6f}")
+
+    if failures:
+        raise RuntimeError(f"{len(failures)} seed(s) failed: {failures}")
 
 
 if __name__ == "__main__":
-    # 1) 允许多卡子进程通过 env 覆盖（可选）
-    env_seed = os.getenv("ALPHAGPT_SEED")
-    env_outdir = os.getenv("ALPHAGPT_OUTPUT_DIR")
-    env_use_lord = os.getenv("ALPHAGPT_USE_LORD")
-    output_dir = str(env_outdir) if env_outdir is not None else ModelConfig.OUTPUT_DIR
-    use_lord = (env_use_lord == "1") if env_use_lord is not None else ModelConfig.USE_LORD
-    # 2) 右键运行：由 ModelConfig 决定单卡/多卡
-    launch_multi_gpu_seed_jobs(gpu_ids = ModelConfig.GPUS, seeds = ModelConfig.SEEDS,
-                               seeds_per_gpu = ModelConfig.SEEDS_PER_GPU, use_lord = use_lord,
-                               output_dir = output_dir)
+    mp.set_start_method("spawn", force=True)
+    launch_multi_gpu_seed_jobs(
+        gpu_ids=ModelConfig.GPUS,
+        seeds=ModelConfig.SEEDS,
+        workers_per_gpu=ModelConfig.SEEDS_PER_GPU,
+        use_lord=ModelConfig.USE_LORD,
+        output_dir=ModelConfig.OUTPUT_DIR,
+    )
