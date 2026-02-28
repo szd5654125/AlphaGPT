@@ -76,6 +76,7 @@ class AlphaEngine:
         self.bt = MemeBacktest()
         
         self.best_score = -float('inf')
+        self.best_raw_score = -float('inf')
         self.best_formula = None
         self.best_threshold = None
         self.training_history = {
@@ -155,7 +156,7 @@ class AlphaEngine:
             stop_eps = ModelConfig.STOP_PROB_EPS
             for step_in_formula in range(ModelConfig.MAX_FORMULA_LEN):
                 alive_before = alive
-                logits, _, _, _, stop_logit = self.model(inp)  # [B,V], [B]
+                logits, _, _, _, _ = self.model(inp)  # [B,V]
                 mask = self._build_strict_mask_rpn(depth, step_in_formula)  # [B, V]
                 dist = Categorical(logits=logits + mask)
                 sampled = dist.sample()
@@ -174,6 +175,8 @@ class AlphaEngine:
                 step_pos = step_in_formula + 1
                 last_pos = torch.where(alive_before, torch.full_like(last_pos, step_pos), last_pos)
                 # stop decision: only meaningful when formula is already complete (depth==1) and length>=min_len
+                # NOTE: stop is predicted from the post-append state.
+                _, _, _, _, stop_logit = self.model(inp)
                 can_stop = alive_before & (depth == 1) & (step_pos >= min_len)
                 p_stop = torch.sigmoid(stop_logit).clamp(stop_eps, 1.0 - stop_eps)
                 stop_dist = Bernoulli(probs=p_stop)
@@ -196,6 +199,7 @@ class AlphaEngine:
             thr_val = thr_bins[thr_idx]  # [B]
             
             rewards = torch.zeros(bs, device=self.device)
+            raw_scores = torch.full((bs,), float("nan"), device=self.device)
             invalid = 0
             lowvar = 0
             reason_hist = {}
@@ -223,17 +227,27 @@ class AlphaEngine:
                 score, ret_val, details = self.bt.evaluate(
                     res, self.loader.raw_data_cache, self.loader.target_ret, thr_val[i].item()
                 )
+                raw_scores[i] = score
                 # length penalty: reward -= λ * (#ops)
                 penalty = lam_ops * float(ops_count[i].item())
-                rewards[i] = score - torch.tensor(penalty, device=rewards.device, dtype=rewards.dtype)
+                reward_i = score - torch.tensor(penalty, device=rewards.device, dtype=rewards.dtype)
+                rewards[i] = reward_i
 
-                if score.item() > self.best_score:
-                    self.best_score = score.item()
+                if reward_i.item() > self.best_score:
+                    self.best_score = reward_i.item()
+                    self.best_raw_score = score.item()
                     self.best_formula = formula
                     self.best_threshold = float(thr_val[i].item())
-                    tqdm.write(f"[!] New King: Score {score:.2f} | Ret {ret_val:.2%} | Formula {formula}")
+                    tqdm.write(
+                        f"[!] New King: Reward {reward_i:.2f} | RawScore {score:.2f} | "
+                        f"Ret {ret_val:.2%} | Formula {formula}"
+                    )
                     print(details)
             early_stop_ratio = (last_pos < ModelConfig.MAX_FORMULA_LEN).float().mean().item()
+            stop_able_ratio = torch.stack(log_probs_stop, dim=1).ne(0).any(dim=1).float().mean().item()
+            stop_p_mean = torch.sigmoid(stop_logit).mean().item()
+            valid_raw = raw_scores[~torch.isnan(raw_scores)]
+            raw_score_mean = valid_raw.mean().item() if valid_raw.numel() > 0 else float("nan")
             if bad_examples:
                 tqdm.write(f"BadExamples={bad_examples}")
             # --- Actor-Critic advantage with baseline ---
@@ -252,7 +266,9 @@ class AlphaEngine:
             tqdm.write(
                 f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | "
                 f"ThrMean={thr_val.mean().item():.3f} | LenMean={last_pos.float().mean().item():.2f} | "
-                f"OpsMean={ops_count.float().mean().item():.2f} | EarlyStop={early_stop_ratio:.2%}"
+                f"OpsMean={ops_count.float().mean().item():.2f} | EarlyStop={early_stop_ratio:.2%} | "
+                f"StopAbleRatio={stop_able_ratio:.2%} | StopPMean={stop_p_mean:.4f} | "
+                f"RawScoreMean={raw_score_mean:.3f} | "
                 f"step={step} ploss={policy_loss.item():.3f} vloss={value_loss.item():.3f}"
             )
             
@@ -270,6 +286,7 @@ class AlphaEngine:
             postfix_dict = {
                 'AvgRew': f"{avg_reward:.3f}",
                 'BestScore': f"{self.best_score:.3f}",
+                'BestRaw': f"{self.best_raw_score:.3f}",
                 'VLoss': f"{value_loss.item():.3f}",
                 'PLoss': f"{policy_loss.item():.3f}",
             }
@@ -290,6 +307,8 @@ class AlphaEngine:
         strategy_file = os.path.join(self.output_dir, f"best_meme_strategy_seed{self.seed}.json")
         with open(strategy_file, "w") as f:
             json.dump({"formula": self.best_formula, "threshold": self.best_threshold,
+                       "best_reward": self.best_score,
+                       "best_raw_score": self.best_raw_score,
                        "threshold_bins": ModelConfig.THRESH_BINS}, f, indent = 2)
         
         # Save training history
@@ -300,7 +319,7 @@ class AlphaEngine:
         
         print(f"\n✓ Training completed!")
         print(f"  Seed: {self.seed} | Device: {self.device}")
-        print(f"  Best score: {self.best_score:.4f}")
+        print(f"  Best reward: {self.best_score:.4f} | Raw score: {self.best_raw_score:.4f}")
         print(f"  Best formula: {self.best_formula}")
         print(f"  Saved strategy to: {strategy_file}")
         print(f"  Saved history to: {history_file}")
