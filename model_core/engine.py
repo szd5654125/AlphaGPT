@@ -264,7 +264,7 @@ class AlphaEngine:
             loss = policy_loss + ModelConfig.VALUE_LOSS_COEF * value_loss
 
             tqdm.write(
-                f"InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | "
+                f"with seed{self.seed}, InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | "
                 f"ThrMean={thr_val.mean().item():.3f} | LenMean={last_pos.float().mean().item():.2f} | "
                 f"OpsMean={ops_count.float().mean().item():.2f} | EarlyStop={early_stop_ratio:.2%} | "
                 f"StopAbleRatio={stop_able_ratio:.2%} | StopPMean={stop_p_mean:.4f} | "
