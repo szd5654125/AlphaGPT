@@ -167,13 +167,10 @@ class FeatureEngineer:
         h = raw_dict['high']
         l = raw_dict['low']
         v = raw_dict['volume']
-        liq = raw_dict['liquidity']
-        fdv = raw_dict['fdv']
 
           # 1) 先把“可能会用到”的 raw 特征都算出来
         raw = {}
         raw["ret"] = torch.log(c / (shift1(c, fill=0.0) + 1e-9))
-        raw["liq_score"] = MemeIndicators.liquidity_health(liq, fdv)
         raw["pressure"] = MemeIndicators.buy_sell_imbalance(c, o, h, l)
         raw["fomo"] = MemeIndicators.fomo_acceleration(v)
         raw["dev"] = MemeIndicators.pump_deviation(c)

@@ -63,7 +63,6 @@ class StrategyConfig:
 FEATURE_PM1_SPECS = {
     # --- core factors ---
     "ret":         {"kind": "robust_z_softsign"},
-    "liq_score":   {"kind": "bounded_01"},
     "pressure":    {"kind": "identity_pm1"},
     "fomo":        {"kind": "robust_z_softsign"},
     "dev":         {"kind": "robust_z_softsign"},

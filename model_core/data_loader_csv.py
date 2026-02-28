@@ -13,9 +13,6 @@ class CsvLoaderConfig:
     device: str = "cpu"               # "cpu" or "cuda"
     max_symbols: int | None = None
     tz_utc: bool = True               # 你的 open_time 看起来是带 +00:00 的
-    liquidity_mode: str = "quote_volume"  # "quote_volume" or "constant"
-    liquidity_constant: float = 1e9
-    fdv_constant: float = 1e12        # 没有fdv就给常数，避免除0/NaN
 
 
 class CsvCryptoDataLoader:
@@ -61,18 +58,6 @@ class CsvCryptoDataLoader:
         for c in ["open", "high", "low", "close", "volume"]:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        # ---- 补 liquidity/fdv ----
-        if self.cfg.liquidity_mode == "quote_volume" and "quote_volume" in df.columns:
-            # quote_volume 大多是以计价币计的成交额，拿来当 liquidity proxy（粗糙但可用）
-            df["liquidity"] = pd.to_numeric(df["quote_volume"], errors="coerce")
-            df["liquidity"] = df["liquidity"].fillna(0.0)
-            # 量纲可能很大/很小，做个下限避免除0
-            df["liquidity"] = df["liquidity"].clip(lower=1.0)
-        else:
-            df["liquidity"] = float(self.cfg.liquidity_constant)
-
-        df["fdv"] = float(self.cfg.fdv_constant)
-
         # ---- 选symbol数量（可选）----
         sym_list = sorted(df["address"].unique().tolist())
         if self.cfg.max_symbols is not None:
@@ -86,7 +71,7 @@ class CsvCryptoDataLoader:
 
         # ---- pivot → tensor [N, T] ----
         raw = {}
-        for col in ["open", "high", "low", "close", "volume", "liquidity", "fdv"]:
+        for col in ["open", "high", "low", "close", "volume"]:
             pv = df.pivot(index="time", columns="address", values=col)
 
             # 对齐缺失：与原代码一致（ffill + fillna(0)）
