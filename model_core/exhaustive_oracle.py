@@ -79,7 +79,7 @@ def enumerate_rpn(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", type=str, required=True)
+    ap.add_argument("--csv", type=str, default="data/futures_um_monthly_klines_ETHUSDT_5m_0_53.csv")
     ap.add_argument("--device", type=str, default="cpu")
     ap.add_argument("--max-len", type=int, default=6)
     ap.add_argument("--min-len", type=int, default=4)

@@ -43,4 +43,8 @@ OPS_CONFIG = [
     ('SUB', lambda x, y: x - y, 2),
     ('MUL', lambda x, y: x * y, 2),
     ('DIV', lambda x, y: x / (y + 1e-6), 2),
+    ('NEG', lambda x: -x, 1),
+    ('ABS', torch.abs, 1),
+    ('SIGN', torch.sign, 1),
+    ('GATE', _op_gate, 3),
 ]

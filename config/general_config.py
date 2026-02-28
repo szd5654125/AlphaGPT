@@ -24,7 +24,8 @@ class DatabaseConfig:
 class ModelConfig:
     DB_URL = f"postgresql://{os.getenv('DB_USER','postgres')}:{os.getenv('DB_PASSWORD','password')}@{os.getenv('DB_HOST','localhost')}:5432/{os.getenv('DB_NAME','crypto_quant')}"
     BATCH_SIZE = 2048
-    TRAIN_STEPS = 1000
+    # TRAIN_STEPS = 1000
+    TRAIN_STEPS = 10
     # MAX_FORMULA_LEN = 12
     MAX_FORMULA_LEN = 6
     TRADE_SIZE_USD = 1000.0
@@ -83,7 +84,13 @@ FEATURE_PM1_SPECS = {
     "ret":         {"kind": "robust_z_softsign"},
     "pressure":    {"kind": "identity_pm1"},
     "fomo":        {"kind": "robust_z_softsign"},
-    "dev":         {"kind": "robust_z_softsign"}}
+    "dev":         {"kind": "robust_z_softsign"},
+    "log_vol": {"kind": "robust_z_softsign"},
+    # --- advanced ---
+    "vol_cluster": {"kind": "robust_z_softsign"},
+    "mom_sign": {"kind": "binary_sign"},  # 你在 factors.py 里生成 {-1,+1}
+    "rel_strength": {"kind": "bounded_0_100"},
+}
 
 
 class ExecutionConfig:
