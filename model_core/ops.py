@@ -22,7 +22,7 @@ def _op_jump(x: torch.Tensor) -> torch.Tensor:
 def _op_decay(x: torch.Tensor) -> torch.Tensor:
     return x + 0.8 * _ts_delay(x, 1) + 0.6 * _ts_delay(x, 2)
 
-OPS_CONFIG = [
+'''OPS_CONFIG = [
     ('ADD', lambda x, y: x + y, 2),
     ('SUB', lambda x, y: x - y, 2),
     ('MUL', lambda x, y: x * y, 2),
@@ -35,4 +35,12 @@ OPS_CONFIG = [
     ('DECAY', _op_decay, 1),
     ('DELAY1', lambda x: _ts_delay(x, 1), 1),
     ('MAX3', lambda x: torch.max(x, torch.max(_ts_delay(x,1), _ts_delay(x,2))), 1)
+]'''
+
+
+OPS_CONFIG = [
+    ('ADD', lambda x, y: x + y, 2),
+    ('SUB', lambda x, y: x - y, 2),
+    ('MUL', lambda x, y: x * y, 2),
+    ('DIV', lambda x, y: x / (y + 1e-6), 2),
 ]

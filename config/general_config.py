@@ -25,7 +25,8 @@ class ModelConfig:
     DB_URL = f"postgresql://{os.getenv('DB_USER','postgres')}:{os.getenv('DB_PASSWORD','password')}@{os.getenv('DB_HOST','localhost')}:5432/{os.getenv('DB_NAME','crypto_quant')}"
     BATCH_SIZE = 2048
     TRAIN_STEPS = 1000
-    MAX_FORMULA_LEN = 12
+    # MAX_FORMULA_LEN = 12
+    MAX_FORMULA_LEN = 6
     TRADE_SIZE_USD = 1000.0
     MIN_LIQUIDITY = 5000.0 # 低于此流动性视为归零/无法交易
     BASE_FEE = 0.005 # 基础费率 0.5% (Swap + Gas + Jito Tip)
@@ -60,7 +61,7 @@ class StrategyConfig:
     SELL_THRESHOLD = 0.45
 
 
-FEATURE_PM1_SPECS = {
+'''FEATURE_PM1_SPECS = {
     # --- core factors ---
     "ret":         {"kind": "robust_z_softsign"},
     "pressure":    {"kind": "identity_pm1"},
@@ -74,7 +75,15 @@ FEATURE_PM1_SPECS = {
     "momentum_rev": {"kind": "bounded_01"},
     "hl_range":    {"kind": "robust_z_softsign"},
     "close_pos":   {"kind": "bounded_01"},
-    "vol_trend":   {"kind": "robust_z_softsign"}}
+    "vol_trend":   {"kind": "robust_z_softsign"}}'''
+
+
+FEATURE_PM1_SPECS = {
+    # --- core factors ---
+    "ret":         {"kind": "robust_z_softsign"},
+    "pressure":    {"kind": "identity_pm1"},
+    "fomo":        {"kind": "robust_z_softsign"},
+    "dev":         {"kind": "robust_z_softsign"}}
 
 
 class ExecutionConfig:
