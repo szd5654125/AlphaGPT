@@ -154,9 +154,9 @@ class AlphaEngine:
             min_len = ModelConfig.MIN_FORMULA_LEN
             lam_ops = ModelConfig.OPS_PENALTY_LAMBDA
             stop_eps = ModelConfig.STOP_PROB_EPS
+            logits, _, _, _, _ = self.model(inp)  # current state logits (for first step)
             for step_in_formula in range(ModelConfig.MAX_FORMULA_LEN):
                 alive_before = alive
-                logits, _, _, _, _ = self.model(inp)  # [B,V]
                 mask = self._build_strict_mask_rpn(depth, step_in_formula)  # [B, V]
                 dist = Categorical(logits=logits + mask)
                 sampled = dist.sample()
@@ -176,7 +176,7 @@ class AlphaEngine:
                 last_pos = torch.where(alive_before, torch.full_like(last_pos, step_pos), last_pos)
                 # stop decision: only meaningful when formula is already complete (depth==1) and length>=min_len
                 # NOTE: stop is predicted from the post-append state.
-                _, _, _, _, stop_logit = self.model(inp)
+                logits, _, _, _, stop_logit = self.model(inp)
                 can_stop = alive_before & (depth == 1) & (step_pos >= min_len)
                 p_stop = torch.sigmoid(stop_logit).clamp(stop_eps, 1.0 - stop_eps)
                 stop_dist = Bernoulli(probs=p_stop)
