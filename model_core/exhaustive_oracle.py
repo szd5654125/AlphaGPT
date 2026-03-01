@@ -153,7 +153,7 @@ def main():
         else:
             if best_local[0] > heap[0][0]:
                 heapq.heapreplace(heap, best_local)
-        if n_eval % 100 == 0:
+        if n_eval % 1000 == 0:
             elapsed = time.time() - t0
             print(
                 f"[progress] generated={n_generated} evaluated={n_eval} elapsed={elapsed:.1f}s best_reward={max(heap)[0]:.6f}",
