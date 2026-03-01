@@ -140,7 +140,7 @@ class AlphaEngine:
         pbar = tqdm(range(ModelConfig.TRAIN_STEPS))
         elite_frac = float(getattr(ModelConfig, "CEM_ELITE_FRAC", 0.10))
         elite_frac = max(1.0 / ModelConfig.BATCH_SIZE, min(elite_frac, 0.5))
-        entropy_beta = float(getattr(ModelConfig, "CEM_ENTROPY_BETA", 0.01))
+        entropy_beta = float(getattr(ModelConfig, "CEM_ENTROPY_BETA", 0.5))
         use_thr_oracle = bool(getattr(ModelConfig, "CEM_THR_ORACLE", True))
         for step in pbar:
             bs = ModelConfig.BATCH_SIZE

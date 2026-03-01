@@ -25,7 +25,7 @@ class ModelConfig:
     DB_URL = f"postgresql://{os.getenv('DB_USER','postgres')}:{os.getenv('DB_PASSWORD','password')}@{os.getenv('DB_HOST','localhost')}:5432/{os.getenv('DB_NAME','crypto_quant')}"
     BATCH_SIZE = 2048
     # TRAIN_STEPS = 1000
-    TRAIN_STEPS = 200
+    TRAIN_STEPS = 40
     # MAX_FORMULA_LEN = 12
     MAX_FORMULA_LEN = 6
     TRADE_SIZE_USD = 1000.0
