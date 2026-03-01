@@ -1,6 +1,7 @@
 import argparse
 import heapq
-from typing import List, Tuple, Iterable
+import multiprocessing as mp
+from typing import Iterable, List, Optional, Set, Tuple
 import time
 import torch
 from config.general_config import ModelConfig
@@ -76,6 +77,73 @@ def enumerate_rpn(
     yield from rec(step=0, depth=0, ops_cnt=0)
 
 
+def evaluate_formula_subset(work_item):
+    (
+        csv_path,
+        device_name,
+        max_len,
+        min_len,
+        feat_ids,
+        op_ids,
+        arity_values,
+        topk,
+        first_tokens,
+    ) = work_item
+
+    device = torch.device(device_name)
+    cfg = CsvLoaderConfig(
+        csv_paths=[csv_path],
+        device=str(device),
+        max_symbols=50,
+    )
+    loader = CsvCryptoDataLoader(cfg).load_data()
+    vm = StackVM()
+    bt = MemeBacktest()
+
+    arity_vec = torch.tensor(arity_values, dtype=torch.long, device=device)
+    lam_ops = float(ModelConfig.OPS_PENALTY_LAMBDA)
+
+    heap: List[Tuple[float, float, float, int, List[int]]] = []
+    n_eval = 0
+    n_generated = 0
+
+    for formula, ops_cnt in enumerate_rpn(
+        max_len=max_len,
+        min_len=min_len,
+        feat_ids=feat_ids,
+        op_ids=op_ids,
+        arity_vec=arity_vec,
+        first_token_filter=set(first_tokens),
+    ):
+        n_generated += 1
+        res, info = vm.execute(formula, loader.feat_tensor)
+        if res is None:
+            continue
+        if res.std() < 1e-4:
+            continue
+
+        best_local = None
+        for thr in ModelConfig.THRESH_BINS:
+            score, ret_val, details = bt.evaluate(res, loader.raw_data_cache, loader.target_ret, float(thr))
+            score_f = float(score.item())
+            reward_f = score_f - lam_ops * float(ops_cnt)
+            cand = (reward_f, score_f, float(thr), ops_cnt, formula)
+            if best_local is None or cand[0] > best_local[0]:
+                best_local = cand
+
+        if best_local is None:
+            continue
+
+        n_eval += 1
+        if len(heap) < topk:
+            heapq.heappush(heap, best_local)
+        else:
+            if best_local[0] > heap[0][0]:
+                heapq.heapreplace(heap, best_local)
+
+    return heap, n_generated, n_eval
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", type=str, default="data/futures_um_monthly_klines_ETHUSDT_5m_0_53.csv")
@@ -114,51 +182,43 @@ def main():
             raise ValueError(f"Unknown op name: {n}. Available: {list(name_to_opid.keys())}")
         op_ids.append(name_to_opid[n])
 
-    lam_ops = float(ModelConfig.OPS_PENALTY_LAMBDA)
-
     # min-heap of (reward, score, thr, ops_cnt, formula)
     heap: List[Tuple[float, float, float, int, List[int]]] = []
 
     n_eval = 0
     n_generated = 0
     print("[stage] start exhaustive enumeration", flush=True)
-    for formula, ops_cnt in enumerate_rpn(
-        max_len=args.max_len,
-        min_len=args.min_len,
-        feat_ids=feat_ids,
-        op_ids=op_ids,
-        arity_vec=arity_vec,
-    ):
-        res, info = vm.execute(formula, loader.feat_tensor)
-        if res is None:
-            continue
-        if res.std() < 1e-4:
-            continue
+    all_tokens = feat_ids + op_ids
+    token_shards = [all_tokens[i::16] for i in range(16)]
+    work_items = [
+        (
+            args.csv,
+            args.device,
+            args.max_len,
+            args.min_len,
+            feat_ids,
+            op_ids,
+            arity_vec.cpu().tolist(),
+            args.topk,
+            shard,
+        )
+        for shard in token_shards
+        if shard
+    ]
+    print(f"[stage] multiprocessing with {len(work_items)} workers", flush=True)
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(processes=len(work_items)) as pool:
+        partial_results = pool.map(evaluate_formula_subset, work_items)
 
-        best_local = None
-        for thr in ModelConfig.THRESH_BINS:
-            score, ret_val, details = bt.evaluate(res, loader.raw_data_cache, loader.target_ret, float(thr))
-            score_f = float(score.item())
-            reward_f = score_f - lam_ops * float(ops_cnt)
-            cand = (reward_f, score_f, float(thr), ops_cnt, formula)
-            if best_local is None or cand[0] > best_local[0]:
-                best_local = cand
-
-        if best_local is None:
-            continue
-
-        n_eval += 1
-        if len(heap) < args.topk:
-            heapq.heappush(heap, best_local)
-        else:
-            if best_local[0] > heap[0][0]:
-                heapq.heapreplace(heap, best_local)
-        if n_eval % 1000 == 0:
-            elapsed = time.time() - t0
-            print(
-                f"[progress] generated={n_generated} evaluated={n_eval} elapsed={elapsed:.1f}s best_reward={max(heap)[0]:.6f}",
-                flush=True,
-            )
+    for partial_heap, local_generated, local_eval in partial_results:
+        n_generated += local_generated
+        n_eval += local_eval
+        for cand in partial_heap:
+            if len(heap) < args.topk:
+                heapq.heappush(heap, cand)
+            else:
+                if cand[0] > heap[0][0]:
+                    heapq.heapreplace(heap, cand)
 
     best = sorted(heap, key=lambda x: x[0], reverse=True)
     print(f"[stage] done in {time.time() - t0:.1f}s", flush=True)
@@ -166,6 +226,7 @@ def main():
     print(f"Evaluated candidates: {n_eval}")
     for i, (rew, score, thr, ops_cnt, formula) in enumerate(best, 1):
         print(f"[{i:02d}] reward={rew:.6f} score={score:.6f} thr={thr:.2f} ops={ops_cnt} formula={formula}")
+
 
 
 if __name__ == "__main__":
