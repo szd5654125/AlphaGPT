@@ -1,9 +1,8 @@
 import argparse
 import heapq
 from typing import List, Tuple, Iterable
-
+import time
 import torch
-
 from config.general_config import ModelConfig
 from model_core.ops import OPS_CONFIG
 from model_core.factors import FeatureEngineer
@@ -87,14 +86,17 @@ def main():
     ap.add_argument("--ops", type=str, default="ADD,SUB,MUL,DIV, NEG, ABS,SIGN,GATE", help="comma-separated op names")
     ap.add_argument("--topk", type=int, default=20)
     args = ap.parse_args()
-
+    t0 = time.time()
+    print("[stage] init device/config", flush=True)
     device = torch.device(args.device)
     cfg = CsvLoaderConfig(
         csv_paths=[args.csv],
         device=str(device),
         max_symbols=50,
     )
+    print("[stage] loading csv data", flush=True)
     loader = CsvCryptoDataLoader(cfg).load_data()
+    print("[stage] building vm/backtest context", flush=True)
 
     vm = StackVM()
     bt = MemeBacktest()
@@ -118,6 +120,8 @@ def main():
     heap: List[Tuple[float, float, float, int, List[int]]] = []
 
     n_eval = 0
+    n_generated = 0
+    print("[stage] start exhaustive enumeration", flush=True)
     for formula, ops_cnt in enumerate_rpn(
         max_len=args.max_len,
         min_len=args.min_len,
@@ -149,8 +153,16 @@ def main():
         else:
             if best_local[0] > heap[0][0]:
                 heapq.heapreplace(heap, best_local)
+        if n_eval % 100 == 0:
+            elapsed = time.time() - t0
+            print(
+                f"[progress] generated={n_generated} evaluated={n_eval} elapsed={elapsed:.1f}s best_reward={max(heap)[0]:.6f}",
+                flush=True,
+            )
 
     best = sorted(heap, key=lambda x: x[0], reverse=True)
+    print(f"[stage] done in {time.time() - t0:.1f}s", flush=True)
+    print(f"Generated candidates: {n_generated}")
     print(f"Evaluated candidates: {n_eval}")
     for i, (rew, score, thr, ops_cnt, formula) in enumerate(best, 1):
         print(f"[{i:02d}] reward={rew:.6f} score={score:.6f} thr={thr:.2f} ops={ops_cnt} formula={formula}")
