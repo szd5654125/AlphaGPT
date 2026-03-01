@@ -24,14 +24,16 @@ class DatabaseConfig:
 class ModelConfig:
     DB_URL = f"postgresql://{os.getenv('DB_USER','postgres')}:{os.getenv('DB_PASSWORD','password')}@{os.getenv('DB_HOST','localhost')}:5432/{os.getenv('DB_NAME','crypto_quant')}"
     BATCH_SIZE = 2048
-    # TRAIN_STEPS = 1000
     TRAIN_STEPS = 40
-    # MAX_FORMULA_LEN = 12
-    MAX_FORMULA_LEN = 6
+    MAX_FORMULA_LEN = 12
     TRADE_SIZE_USD = 1000.0
     MIN_LIQUIDITY = 5000.0 # 低于此流动性视为归零/无法交易
     BASE_FEE = 0.005 # 基础费率 0.5% (Swap + Gas + Jito Tip)
-    THRESH_BINS = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.99]
+    THRESH_MIN = 0.60
+    THRESH_MAX = 0.90
+    THRESH_STEP = 0.01
+    _N = int(round((THRESH_MAX - THRESH_MIN) / THRESH_STEP)) + 1
+    THRESH_BINS = [round(THRESH_MIN + i * THRESH_STEP, 4) for i in range(_N)]
     # variable-length formula
     MIN_FORMULA_LEN = 4  # 至少生成多少步才允许 stop
     OPS_PENALTY_LAMBDA = 0.0001  # reward -= λ * (#ops)

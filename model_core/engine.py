@@ -141,7 +141,15 @@ class AlphaEngine:
         elite_frac = float(getattr(ModelConfig, "CEM_ELITE_FRAC", 0.10))
         elite_frac = max(1.0 / ModelConfig.BATCH_SIZE, min(elite_frac, 0.5))
         entropy_beta = float(getattr(ModelConfig, "CEM_ENTROPY_BETA", 0.5))
-        use_thr_oracle = bool(getattr(ModelConfig, "CEM_THR_ORACLE", True))
+        thr_bins_list = sorted([float(x) for x in ModelConfig.THRESH_BINS])
+        if len(thr_bins_list) >= 3:
+            step0 = thr_bins_list[1] - thr_bins_list[0]
+        # 允许一点浮点误差
+        for j in range(2, len(thr_bins_list)):
+            if abs((thr_bins_list[j] - thr_bins_list[j - 1]) - step0) > 1e-9:
+                raise ValueError("THRESH_BINS must be uniformly spaced for coarse/refine search.")
+        thr_bins = torch.tensor(thr_bins_list, device=self.device, dtype=torch.float32)
+
         for step in pbar:
             bs = ModelConfig.BATCH_SIZE
             inp = torch.zeros((bs, 1), dtype=torch.long, device=self.device)
@@ -197,8 +205,6 @@ class AlphaEngine:
                     p_stop_sum += float(p_stop[can_stop].sum().item())
                     p_stop_cnt += c
             seqs = torch.stack(tokens_list, dim=1)  # [B, MAX_LEN]
-            thr_bins_list = [float(x) for x in ModelConfig.THRESH_BINS]
-            thr_bins = torch.tensor(thr_bins_list, device=self.device, dtype=torch.float32)
             best_thr_idx = torch.zeros(bs, dtype=torch.long, device=self.device)  # for optional supervised thr-head
             
             rewards = torch.zeros(bs, device=self.device)
@@ -227,15 +233,46 @@ class AlphaEngine:
                     rewards[i] = -10.0
                     continue
 
+                # ---- two-stage threshold search (coarse->refine) ----best_score = None
+                thr_min = thr_bins_list[0]
+                thr_max = thr_bins_list[-1]
+                thr_step = thr_bins_list[1] - thr_bins_list[0] if len(thr_bins_list) > 1 else 1.0
+                coarse_step = float(getattr(ModelConfig, "THRESH_COARSE_STEP", 0.05))
+                refine_radius = float(getattr(ModelConfig, "THRESH_REFINE_RADIUS", 0.05))
+
+                def thr_to_idx(thr: float) -> int:
+                    return int(round((thr - thr_min) / thr_step))
+                coarse_thrs = []
+                x = thr_min
+                while x <= thr_max + 1e-12:
+                    coarse_thrs.append(x)
+                    x += coarse_step
+                coarse_idx = [thr_to_idx(t) for t in coarse_thrs if (thr_min - 1e-12) <= t <= (thr_max + 1e-12)]
+                coarse_idx = [k for k in coarse_idx if 0 <= k < len(thr_bins_list)]
+                coarse_idx = sorted(set(coarse_idx))
                 best_score = None
-                best_k = 0
+                best_k = coarse_idx[0] if coarse_idx else 0
                 best_details = None
                 best_ret = None
-                for k, thr in enumerate(thr_bins_list):
-                    score_k, ret_k, details_k = self.bt.evaluate(
-                        res, self.loader.raw_data_cache, self.loader.target_ret, float(thr))
+                for k in coarse_idx:
+                    thr = thr_bins_list[k]
+                    score_k, ret_k, details_k = self.bt.evaluate(res, self.loader.raw_data_cache,
+                                                                 self.loader.target_ret, float(thr))
                     s = float(score_k.item())
                     if (best_score is None) or (s > best_score):
+                        best_score = s
+                        best_k = k
+                        best_details = details_k
+                        best_ret = ret_k
+                radius_steps = int(round(refine_radius / thr_step))
+                lo = max(0, best_k - radius_steps)
+                hi = min(len(thr_bins_list) - 1, best_k + radius_steps)
+                for k in range(lo, hi + 1):
+                    thr = thr_bins_list[k]
+                    score_k, ret_k, details_k = self.bt.evaluate(res, self.loader.raw_data_cache,
+                                                                 self.loader.target_ret, float(thr))
+                    s = float(score_k.item())
+                    if s > best_score:
                         best_score = s
                         best_k = k
                         best_details = details_k
