@@ -1,6 +1,7 @@
 import torch
 import random
-from torch.distributions import Categorical, Bernoulli
+from torch.distributions import Bernoulli
+from torch.distributions import Categorical as CatDist
 import torch.nn.functional as F
 from tqdm import tqdm
 import os
@@ -137,13 +138,14 @@ class AlphaEngine:
             print(f"   Target keywords: ['q_proj', 'k_proj', 'attention', 'qk_norm']")
         
         pbar = tqdm(range(ModelConfig.TRAIN_STEPS))
-        
+        elite_frac = float(getattr(ModelConfig, "CEM_ELITE_FRAC", 0.10))
+        elite_frac = max(1.0 / ModelConfig.BATCH_SIZE, min(elite_frac, 0.5))
+        entropy_beta = float(getattr(ModelConfig, "CEM_ENTROPY_BETA", 0.01))
+        use_thr_oracle = bool(getattr(ModelConfig, "CEM_THR_ORACLE", True))
         for step in pbar:
             bs = ModelConfig.BATCH_SIZE
             inp = torch.zeros((bs, 1), dtype=torch.long, device=self.device)
-            
-            log_probs_tokens = []
-            log_probs_stop = []
+
             tokens_list = []
 
             depth = torch.zeros(bs, dtype=torch.long, device=self.device)
@@ -154,15 +156,19 @@ class AlphaEngine:
             min_len = ModelConfig.MIN_FORMULA_LEN
             lam_ops = ModelConfig.OPS_PENALTY_LAMBDA
             stop_eps = ModelConfig.STOP_PROB_EPS
-            logits, _, _, _, _ = self.model(inp)  # current state logits (for first step)
+            alive_total = 0
+            can_stop_total = 0
+            do_stop_total = 0
+            p_stop_sum = 0.0
+            p_stop_cnt = 0
             for step_in_formula in range(ModelConfig.MAX_FORMULA_LEN):
                 alive_before = alive
+                alive_total += int(alive_before.sum().item())
                 mask = self._build_strict_mask_rpn(depth, step_in_formula)  # [B, V]
-                dist = Categorical(logits=logits + mask)
+                logits, _, _, _, _ = self.model(inp)
+                dist = CatDist(logits=logits + mask)
                 sampled = dist.sample()
                 action = torch.where(alive_before, sampled, torch.full_like(sampled, pad_id))
-                lp_tok = dist.log_prob(sampled) * alive_before.float()
-                log_probs_tokens.append(lp_tok)
                 tokens_list.append(action)
                 inp = torch.cat([inp, action.unsqueeze(1)], dim=1)
                 # 更新栈深度
@@ -176,30 +182,27 @@ class AlphaEngine:
                 last_pos = torch.where(alive_before, torch.full_like(last_pos, step_pos), last_pos)
                 # stop decision: only meaningful when formula is already complete (depth==1) and length>=min_len
                 # NOTE: stop is predicted from the post-append state.
-                logits, _, _, _, stop_logit = self.model(inp)
+                _, _, _, _, stop_logit = self.model(inp)
                 can_stop = alive_before & (depth == 1) & (step_pos >= min_len)
                 p_stop = torch.sigmoid(stop_logit).clamp(stop_eps, 1.0 - stop_eps)
                 stop_dist = Bernoulli(probs=p_stop)
                 stop_sample = stop_dist.sample()
                 stop_sample = torch.where(can_stop, stop_sample, torch.zeros_like(stop_sample))
-                lp_stop = stop_dist.log_prob(stop_sample) * can_stop.float()
-                log_probs_stop.append(lp_stop)
                 do_stop = can_stop & (stop_sample.bool())
                 alive = alive_before & (~do_stop)
-            
+                if can_stop.any():
+                    c = int(can_stop.sum().item())
+                    can_stop_total += c
+                    do_stop_total += int(do_stop.sum().item())
+                    p_stop_sum += float(p_stop[can_stop].sum().item())
+                    p_stop_cnt += c
             seqs = torch.stack(tokens_list, dim=1)  # [B, MAX_LEN]
-            _, value, _, thr_logits, _ = self.model(inp, last_positions=last_pos)  # [B, n_thr]
-            value = value.squeeze(-1)  # -> [B]
-
-            thr_dist = Categorical(logits=thr_logits)
-            thr_idx = thr_dist.sample()  # [B]
-            logp_thr = thr_dist.log_prob(thr_idx)  # [B]
-            thr_bins = torch.tensor(ModelConfig.THRESH_BINS, device=self.device,
-                                                 dtype=torch.float32)
-            thr_val = thr_bins[thr_idx]  # [B]
+            thr_bins_list = [float(x) for x in ModelConfig.THRESH_BINS]
+            thr_bins = torch.tensor(thr_bins_list, device=self.device, dtype=torch.float32)
+            best_thr_idx = torch.zeros(bs, dtype=torch.long, device=self.device)  # for optional supervised thr-head
             
             rewards = torch.zeros(bs, device=self.device)
-            raw_scores = torch.full((bs,), float("nan"), device=self.device)
+            raw_scores = torch.full((bs,), float("nan"), device=self.device)  # store best raw score (oracle thr)
             invalid = 0
             lowvar = 0
             reason_hist = {}
@@ -224,52 +227,92 @@ class AlphaEngine:
                     rewards[i] = -10.0
                     continue
 
-                score, ret_val, details = self.bt.evaluate(
-                    res, self.loader.raw_data_cache, self.loader.target_ret, thr_val[i].item()
-                )
+                best_score = None
+                best_k = 0
+                best_details = None
+                best_ret = None
+                for k, thr in enumerate(thr_bins_list):
+                    score_k, ret_k, details_k = self.bt.evaluate(
+                        res, self.loader.raw_data_cache, self.loader.target_ret, float(thr))
+                    s = float(score_k.item())
+                    if (best_score is None) or (s > best_score):
+                        best_score = s
+                        best_k = k
+                        best_details = details_k
+                        best_ret = ret_k
+                score = torch.tensor(best_score, device=self.device, dtype=torch.float32)
+                best_thr_idx[i] = int(best_k)
                 raw_scores[i] = score
+                ret_val, details = best_ret, best_details
                 # length penalty: reward -= λ * (#ops)
                 penalty = lam_ops * float(ops_count[i].item())
-                reward_i = score - torch.tensor(penalty, device=rewards.device, dtype=rewards.dtype)
-                rewards[i] = reward_i
+                reward_i = float(score.item()) - penalty
+                rewards[i] = torch.tensor(reward_i, device=self.device, dtype=torch.float32)
 
-                if reward_i.item() > self.best_score:
-                    self.best_score = reward_i.item()
-                    self.best_raw_score = score.item()
+                if reward_i > self.best_score:
+                    self.best_score = reward_i
+                    self.best_raw_score = float(score.item())
                     self.best_formula = formula
-                    self.best_threshold = float(thr_val[i].item())
+                    self.best_threshold = float(thr_bins[best_thr_idx[i]].item())
                     tqdm.write(
-                        f"[!] New King: Reward {reward_i:.2f} | RawScore {score:.2f} | "
+                        f"[!] New King: Reward {reward_i:.6f} | RawScore {float(score.item()):.6f} | "
                         f"Ret {ret_val:.2%} | Formula {formula}"
                     )
                     print(details)
             early_stop_ratio = (last_pos < ModelConfig.MAX_FORMULA_LEN).float().mean().item()
-            stop_able_ratio = torch.stack(log_probs_stop, dim=1).ne(0).any(dim=1).float().mean().item()
-            stop_p_mean = torch.sigmoid(stop_logit).mean().item()
+            stop_able_ratio = (can_stop_total / max(alive_total, 1))
+            stop_hit_ratio = (do_stop_total / max(can_stop_total, 1))
+            stop_p_mean = (p_stop_sum / max(p_stop_cnt, 1))
             valid_raw = raw_scores[~torch.isnan(raw_scores)]
             raw_score_mean = valid_raw.mean().item() if valid_raw.numel() > 0 else float("nan")
             if bad_examples:
                 tqdm.write(f"BadExamples={bad_examples}")
-            # --- Actor-Critic advantage with baseline ---
-            adv = rewards - value.detach()
-            adv = (adv - adv.mean()) / (adv.std() + ModelConfig.ADV_NORM_EPS)
-            
-            logp_tokens = torch.stack(log_probs_tokens, dim=1).sum(dim=1)  # [B]
-            logp_stop_total = torch.stack(log_probs_stop, dim=1).sum(dim=1)  # [B]
-            logp_total = logp_tokens + logp_stop_total + logp_thr  # [B]
-            # policy loss
-            policy_loss = -(logp_total * adv).mean()
-            # critic loss（Huber 更抗 reward outlier；也可换 MSE）
-            value_loss = F.smooth_l1_loss(value, rewards)
-            loss = policy_loss + ModelConfig.VALUE_LOSS_COEF * value_loss
+            # ---- CEM: select elites ----
+            elite_k = max(1, int(bs * elite_frac))
+            elite_idx = torch.topk(rewards, k=elite_k, largest=True).indices  # [K]
+            # ---- CEM: behavior cloning on elites (maximize likelihood) ----
+            # We recompute teacher-forced log-likelihood over the elite sequences.
+            cem_loss = torch.tensor(0.0, device=self.device)
+            ent_loss = torch.tensor(0.0, device=self.device)
+            # teacher forcing: step-by-step on prefixes
+            inp_e = torch.zeros((elite_k, 1), dtype=torch.long, device=self.device)
+            depth_e = torch.zeros(elite_k, dtype=torch.long, device=self.device)
+            last_pos_e = last_pos[elite_idx]  # [K]
+            seqs_e = seqs[elite_idx]  # [K, MAX_LEN]
+            for t in range(ModelConfig.MAX_FORMULA_LEN):
+                mask_e = self._build_strict_mask_rpn(depth_e, t)  # [K, V]
+                logits_e, _, _, _, _ = self.model(inp_e)
+                masked_logits = logits_e + mask_e
+                # targets are the sampled tokens (treated as labels)
+                y = seqs_e[:, t]  # [K]
+                # only positions <= last_pos are real tokens
+                valid = (t + 1 <= last_pos_e)
+                if valid.any():
+                    ce = F.cross_entropy(masked_logits[valid], y[valid], reduction="mean")
+                    cem_loss = cem_loss + ce
+                # entropy bonus (encourage exploration / prevent collapse)
+                if entropy_beta > 0:
+                    if valid.any():
+                        dist_e = CatDist(logits=masked_logits[valid])
+                        ent_loss = ent_loss - entropy_beta * dist_e.entropy().mean()
+                # update depth_e with chosen token y
+                ar = self.arity_vec[y]
+                is_feat = (ar == 0)
+                depth_e = torch.where(is_feat, depth_e + 1, depth_e - ar + 1)
+                # append token to prefix for next step
+                inp_e = torch.cat([inp_e, y.unsqueeze(1)], dim=1)
+            # optional: supervised threshold head on elites (using oracle best_thr_idx)
+            _, _, _, thr_logits_e, _ = self.model(inp_e, last_positions=last_pos_e)
+            thr_loss = F.cross_entropy(thr_logits_e, best_thr_idx[elite_idx], reduction="mean")
+            loss = cem_loss + thr_loss + ent_loss
 
             tqdm.write(
                 f"with seed{self.seed}, InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | "
-                f"ThrMean={thr_val.mean().item():.3f} | LenMean={last_pos.float().mean().item():.2f} | "
+                f"LenMean={last_pos.float().mean().item():.2f} | "
                 f"OpsMean={ops_count.float().mean().item():.2f} | EarlyStop={early_stop_ratio:.2%} | "
-                f"StopAbleRatio={stop_able_ratio:.2%} | StopPMean={stop_p_mean:.4f} | "
+                f"StopAbleRatio={stop_able_ratio:.2%} | StopHitRatio={stop_hit_ratio:.2%} | StopPMean={stop_p_mean:.4f} | "
                 f"RawScoreMean={raw_score_mean:.3f} | "
-                f"step={step} ploss={policy_loss.item():.3f} vloss={value_loss.item():.3f}"
+                f"step={step} cem_loss={float(cem_loss.item()):.3f} thr_loss={float(thr_loss.item()):.3f}"
             )
             
             # Gradient step
@@ -287,8 +330,8 @@ class AlphaEngine:
                 'AvgRew': f"{avg_reward:.3f}",
                 'BestScore': f"{self.best_score:.3f}",
                 'BestRaw': f"{self.best_raw_score:.3f}",
-                'VLoss': f"{value_loss.item():.3f}",
-                'PLoss': f"{policy_loss.item():.3f}",
+                'CEM': f"{float(cem_loss.item()):.3f}",
+                'THR': f"{float(thr_loss.item()):.3f}",
             }
             
             if self.use_lord and step % 100 == 0:
