@@ -83,8 +83,8 @@ def main():
     ap.add_argument("--device", type=str, default="cpu")
     ap.add_argument("--max-len", type=int, default=6)
     ap.add_argument("--min-len", type=int, default=4)
-    ap.add_argument("--k-feats", type=int, default=4, help="use first k features (0..k-1)")
-    ap.add_argument("--ops", type=str, default="ADD,SUB,MUL,DIV", help="comma-separated op names")
+    ap.add_argument("--k-feats", type=int, default=8, help="use first k features (0..k-1)")
+    ap.add_argument("--ops", type=str, default="ADD,SUB,MUL,DIV, NEG, ABS,SIGN,GATE", help="comma-separated op names")
     ap.add_argument("--topk", type=int, default=20)
     args = ap.parse_args()
 
