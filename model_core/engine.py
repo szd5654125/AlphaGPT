@@ -1,4 +1,6 @@
 import torch
+from collections import deque
+import hashlib
 import random
 from torch.distributions import Bernoulli
 from torch.distributions import Categorical as CatDist
@@ -95,6 +97,224 @@ class AlphaEngine:
             self.arity_vec[self.feat_offset + j] = arity
         # 单步最大“降栈幅度”：max(arity-1)，用于判断“剩余步数是否还能收敛到 1”
         self.max_reduce = max((arity - 1 for (_, _, arity) in OPS_CONFIG), default=0)
+        # ---- formula de-dup (exact token sequence) ----
+        self._seen_global = set()
+        self._seen_fifo = deque()
+        self._seen_limit = int(getattr(ModelConfig, "DEDUP_GLOBAL_CACHE", 300000))
+        self._dedup_max_tries = int(getattr(ModelConfig, "DEDUP_MAX_TRIES", 8))
+        self._dedup_fail = 0
+        # ---- semantic de-dup ----
+        self._seen_sem_global = set()
+        self._seen_sem_fifo = deque()
+        self._seen_sem_limit = int(getattr(ModelConfig, "DEDUP_SEM_CACHE", 300000))
+        self._use_sem_dedup = bool(getattr(ModelConfig, "DEDUP_USE_SEM", True))
+        # op id -> (name, arity)
+        self._op_meta = []
+        for j, (name, _, arity) in enumerate(OPS_CONFIG):
+            self._op_meta.append((name, arity))
+        # canonicalization rules: conservative
+        self._comm_ops = {"ADD", "MUL"}
+        self._assoc_ops = {"ADD", "MUL"}  # 如果你不想 flatten，把这行设为空 set()
+        self._idem_ops = {"ABS", "SIGN"}
+
+    def _key64(self, toks):
+        # 8-byte digest -> python int
+        h = hashlib.blake2b(digest_size=8)
+        # vocab 很小，1 byte 足够；更通用点用 2 bytes
+        for t in toks:
+            h.update(int(t).to_bytes(2, "little", signed=False))
+        return int.from_bytes(h.digest(), "little", signed=False)
+
+    def _ast_hash64(self, node):
+        """Hash canonical AST -> 64-bit int."""
+        h = hashlib.blake2b(digest_size=8)
+        def walk(n):
+            tag = n[0]
+            if tag == "F":
+                h.update(b"F")
+                h.update(int(n[1]).to_bytes(2, "little", signed=False))
+                return
+            # ("OP", name, children_tuple)
+            h.update(b"O")
+            name_b = n[1].encode("utf-8")
+            h.update(len(name_b).to_bytes(1, "little"))
+            h.update(name_b)
+            kids = n[2]
+            h.update(len(kids).to_bytes(1, "little"))
+            h.update(b"[")
+            for c in kids:
+                walk(c)
+            h.update(b"]")
+        walk(node)
+        return int.from_bytes(h.digest(), "little", signed=False)
+
+    def _rpn_to_ast(self, toks):
+        """RPN tokens -> AST node. Return None if malformed."""
+        st = []
+        for t in toks:
+            if t < self.feat_offset:
+                st.append(("F", int(t)))
+                continue
+            op_idx = int(t - self.feat_offset)
+            if op_idx < 0 or op_idx >= len(self._op_meta):
+                return None
+            name, arity = self._op_meta[op_idx]
+            if len(st) < arity:
+                return None
+            if arity == 1:
+                x = st.pop()
+                st.append(("OP", name, (x,)))
+            elif arity == 2:
+                b = st.pop()
+                a = st.pop()
+                st.append(("OP", name, (a, b)))
+            elif arity == 3:
+                c = st.pop()
+                b = st.pop()
+                a = st.pop()
+                st.append(("OP", name, (a, b, c)))
+            else:
+                return None
+        if len(st) != 1:
+            return None
+        return st[0]
+
+    def _canon(self, node):
+        """Canonicalize AST conservatively."""
+        if node is None:
+            return None
+        if node[0] == "F":
+            return node
+        _, name, kids = node
+        kids_c = tuple(self._canon(k) for k in kids)
+        # NEG(NEG(x)) -> x
+        if name == "NEG":
+            x = kids_c[0]
+            if x[0] == "OP" and x[1] == "NEG":
+                return x[2][0]
+            return ("OP", "NEG", (x,))
+        # idempotent: ABS(ABS(x)) -> ABS(x), SIGN(SIGN(x)) -> SIGN(x)
+        if name in self._idem_ops:
+            x = kids_c[0]
+            if x[0] == "OP" and x[1] == name:
+                return x
+            return ("OP", name, (x,))
+        # commutative + associative: flatten + sort
+        if name in self._comm_ops:
+            flat = []
+            for k in kids_c:
+                if (name in self._assoc_ops) and (k[0] == "OP") and (k[1] == name):
+                    flat.extend(list(k[2]))
+                else:
+                    flat.append(k)
+            # sort by structural hash for determinism
+            flat_sorted = sorted(flat, key=lambda n: (self._ast_hash64(n), repr(n)))
+            return ("OP", name, tuple(flat_sorted))
+        # default: keep order
+        return ("OP", name, kids_c)
+
+    def _sem_key64(self, toks):
+        ast = self._rpn_to_ast(toks)
+        if ast is None:
+            # fallback: treat as raw
+            return self._key64(toks)
+        can = self._canon(ast)
+        return self._ast_hash64(can)
+
+    def _remember_key(self, key64):
+        """Remember a formula key with FIFO eviction to cap memory."""
+
+        if key64 in self._seen_global:
+            return
+        self._seen_global.add(key64)
+        self._seen_fifo.append(key64)
+        if len(self._seen_fifo) > self._seen_limit:
+            old = self._seen_fifo.popleft()
+            self._seen_global.discard(old)
+
+    def _remember_sem_key(self, key64: int) -> None:
+        if key64 in self._seen_sem_global:
+            return
+        self._seen_sem_global.add(key64)
+        self._seen_sem_fifo.append(key64)
+        if len(self._seen_sem_fifo) > self._seen_sem_limit:
+            old = self._seen_sem_fifo.popleft()
+            self._seen_sem_global.discard(old)
+
+    @ torch.no_grad()
+    def _sample_one_formula(self):
+        """Sample exactly one formula (tokens, length, ops_count) using the same constraints as batch sampling."""
+        inp = torch.zeros((1, 1), dtype=torch.long, device=self.device)
+        depth = torch.zeros(1, dtype=torch.long, device=self.device)
+        ops_count = torch.zeros(1, dtype=torch.long, device=self.device)
+        pad_id = 0
+        min_len = ModelConfig.MIN_FORMULA_LEN
+        stop_eps = ModelConfig.STOP_PROB_EPS
+        tokens: list[int] = []
+        for t in range(ModelConfig.MAX_FORMULA_LEN):
+            mask = self._build_strict_mask_rpn(depth, t)
+            logits, _, _, _, _ = self.model(inp)
+            dist = CatDist(logits=logits + mask)
+            action = dist.sample()  # [1]
+            tok = int(action.item())
+            tokens.append(tok)
+            inp = torch.cat([inp, action.view(1, 1)], dim=1)
+            arity = self.arity_vec[action]  # [1]
+            is_feat = (arity == 0)
+            depth = torch.where(is_feat, depth + 1, depth - arity + 1)
+            ops_count = ops_count + (arity > 0).long()
+            step_pos = t + 1
+            # stop decision only when formula can terminate
+            _, _, _, _, stop_logit = self.model(inp)
+            can_stop = (depth == 1) & (step_pos >= min_len)
+            if bool(can_stop.item()):
+                p_stop = torch.sigmoid(stop_logit).clamp(stop_eps, 1.0 - stop_eps)
+                do_stop = bool(Bernoulli(probs=p_stop).sample().item())
+                if do_stop:
+                    return tokens, step_pos, int(ops_count.item())
+        return tokens, ModelConfig.MAX_FORMULA_LEN, int(ops_count.item())
+
+    def _dedup_batch_inplace(self, seqs: torch.Tensor, last_pos: torch.Tensor, ops_count: torch.Tensor):
+        """In-place de-dup: ensure no exact duplicate formulas in this batch (and optionally globally)."""
+        seen_batch=set()
+        seen_sem_batch = set()
+        pad_id = 0
+        formulas = [None] * int(seqs.shape[0])
+        for i in range(int(seqs.shape[0])):
+            L = int(last_pos[i].item())
+            toks = seqs[i, :L].tolist()
+            key = self._key64(toks)
+            sem_key = self._sem_key64(toks) if self._use_sem_dedup else 0
+            dup = (key in seen_batch) or (key in self._seen_global)
+            if self._use_sem_dedup:
+                dup = dup or (sem_key in seen_sem_batch) or (sem_key in self._seen_sem_global)
+            if dup:
+            # rejection resample
+                for _ in range(self._dedup_max_tries):
+                    toks2, L2, ops2 = self._sample_one_formula()
+                    key2 = self._key64(toks2)
+                    sem2 = self._sem_key64(toks2) if self._use_sem_dedup else 0
+                    ok = (key2 not in seen_batch) and (key2 not in self._seen_global)
+                    if self._use_sem_dedup:
+                        ok = ok and (sem2 not in seen_sem_batch) and (sem2 not in self._seen_sem_global)
+                    if ok:
+                        seqs[i].fill_(pad_id)
+                        seqs[i, :L2] = torch.tensor(toks2, device=self.device, dtype=torch.long)
+                        last_pos[i] = L2
+                        ops_count[i] = ops2
+                        toks = toks2
+                        key = key2
+                        sem_key = sem2
+                        break
+                    else:
+                        self._dedup_fail += 1
+            seen_batch.add(key)
+            self._remember_key(key)
+            if self._use_sem_dedup:
+                seen_sem_batch.add(sem_key)
+                self._remember_sem_key(sem_key)
+            formulas[i] = toks
+        return formulas
 
     def _build_strict_mask_rpn(self, depth: torch.Tensor, step: int) -> torch.Tensor:
         """
@@ -206,7 +426,7 @@ class AlphaEngine:
                     p_stop_cnt += c
             seqs = torch.stack(tokens_list, dim=1)  # [B, MAX_LEN]
             best_thr_idx = torch.zeros(bs, dtype=torch.long, device=self.device)  # for optional supervised thr-head
-            
+            formulas = self._dedup_batch_inplace(seqs, last_pos, ops_count)
             rewards = torch.zeros(bs, device=self.device)
             raw_scores = torch.full((bs,), float("nan"), device=self.device)  # store best raw score (oracle thr)
             invalid = 0
@@ -215,7 +435,7 @@ class AlphaEngine:
             bad_examples = []
             for i in range(bs):
                 L = int(last_pos[i].item())
-                formula = seqs[i, :L].tolist()
+                formula = formulas[i]
                 res, info   = self.vm.execute(formula, self.loader.feat_tensor)
                 # res, info  = self.vm.execute(seqs[i].tolist(), self.loader.feat_tensor)
                 if res is None:
