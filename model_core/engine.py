@@ -101,6 +101,10 @@ class AlphaEngine:
         self._seen_global = set()
         self._seen_fifo = deque()
         self._seen_limit = int(getattr(ModelConfig, "DEDUP_GLOBAL_CACHE", 300000))
+        # ---- canonical token de-dup (after simplify/canonicalize) ----
+        self._seen_can_global = set()
+        self._seen_can_fifo = deque()
+        self._seen_can_limit = int(getattr(ModelConfig, "DEDUP_CANON_CACHE", self._seen_limit))
         self._dedup_max_tries = int(getattr(ModelConfig, "DEDUP_MAX_TRIES", 8))
         self._dedup_fail = 0
         # ---- semantic de-dup ----
@@ -221,6 +225,41 @@ class AlphaEngine:
         can = self._canon(ast)
         return self._ast_hash64(can)
 
+    def _ast_to_rpn(self, node):
+        """AST -> canonical RPN tokens. Return None if node is malformed."""
+        out = []
+
+        def walk(n):
+            if n is None:
+                return False
+            tag = n[0]
+            if tag == "F":
+                out.append(int(n[1]))
+                return True
+            if tag != "OP":
+                return False
+            _, name, kids = n
+            for c in kids:
+                if not walk(c):
+                    return False
+            for j, (op_name, _) in enumerate(self._op_meta):
+                if op_name == name:
+                    out.append(self.feat_offset + j)
+                    return True
+            return False
+
+        ok = walk(node)
+        return out if ok else None
+
+    def _canonicalize_tokens(self, toks):
+        """Project one token sequence into canonical short form when possible."""
+        ast = self._rpn_to_ast(toks)
+        if ast is None:
+            return toks
+        can = self._canon(ast)
+        can_toks = self._ast_to_rpn(can)
+        return can_toks if can_toks else toks
+
     def _remember_key(self, key64):
         """Remember a formula key with FIFO eviction to cap memory."""
 
@@ -240,6 +279,15 @@ class AlphaEngine:
         if len(self._seen_sem_fifo) > self._seen_sem_limit:
             old = self._seen_sem_fifo.popleft()
             self._seen_sem_global.discard(old)
+
+    def _remember_can_key(self, key64: int) -> None:
+        if key64 in self._seen_can_global:
+            return
+        self._seen_can_global.add(key64)
+        self._seen_can_fifo.append(key64)
+        if len(self._seen_can_fifo) > self._seen_can_limit:
+            old = self._seen_can_fifo.popleft()
+            self._seen_can_global.discard(old)
 
     @ torch.no_grad()
     def _sample_one_formula(self):
@@ -276,25 +324,40 @@ class AlphaEngine:
 
     def _dedup_batch_inplace(self, seqs: torch.Tensor, last_pos: torch.Tensor, ops_count: torch.Tensor):
         """In-place de-dup: ensure no exact duplicate formulas in this batch (and optionally globally)."""
-        seen_batch=set()
+        seen_batch_raw = set()
+        seen_batch_can = set()
         seen_sem_batch = set()
         pad_id = 0
         formulas = [None] * int(seqs.shape[0])
         for i in range(int(seqs.shape[0])):
             L = int(last_pos[i].item())
-            toks = seqs[i, :L].tolist()
-            key = self._key64(toks)
+            raw_toks = seqs[i, :L].tolist()
+            toks = self._canonicalize_tokens(raw_toks)
+            raw_key = self._key64(raw_toks)
+            can_key = self._key64(toks)
             sem_key = self._sem_key64(toks) if self._use_sem_dedup else 0
-            dup = (key in seen_batch) or (key in self._seen_global)
+            dup = (
+                    (raw_key in seen_batch_raw)
+                    or (raw_key in self._seen_global)
+                    or (can_key in seen_batch_can)
+                    or (can_key in self._seen_can_global)
+            )
             if self._use_sem_dedup:
                 dup = dup or (sem_key in seen_sem_batch) or (sem_key in self._seen_sem_global)
             if dup:
             # rejection resample
                 for _ in range(self._dedup_max_tries):
                     toks2, L2, ops2 = self._sample_one_formula()
-                    key2 = self._key64(toks2)
-                    sem2 = self._sem_key64(toks2) if self._use_sem_dedup else 0
-                    ok = (key2 not in seen_batch) and (key2 not in self._seen_global)
+                    can_toks2 = self._canonicalize_tokens(toks2)
+                    raw_key2 = self._key64(toks2)
+                    can_key2 = self._key64(can_toks2)
+                    sem2 = self._sem_key64(can_toks2) if self._use_sem_dedup else 0
+                    ok = (
+                            (raw_key2 not in seen_batch_raw)
+                            and (raw_key2 not in self._seen_global)
+                            and (can_key2 not in seen_batch_can)
+                            and (can_key2 not in self._seen_can_global)
+                    )
                     if self._use_sem_dedup:
                         ok = ok and (sem2 not in seen_sem_batch) and (sem2 not in self._seen_sem_global)
                     if ok:
@@ -302,14 +365,17 @@ class AlphaEngine:
                         seqs[i, :L2] = torch.tensor(toks2, device=self.device, dtype=torch.long)
                         last_pos[i] = L2
                         ops_count[i] = ops2
-                        toks = toks2
-                        key = key2
+                        toks = can_toks2
+                        raw_key = raw_key2
+                        can_key = can_key2
                         sem_key = sem2
                         break
                     else:
                         self._dedup_fail += 1
-            seen_batch.add(key)
-            self._remember_key(key)
+            seen_batch_raw.add(raw_key)
+            self._remember_key(raw_key)
+            seen_batch_can.add(can_key)
+            self._remember_can_key(can_key)
             if self._use_sem_dedup:
                 seen_sem_batch.add(sem_key)
                 self._remember_sem_key(sem_key)
@@ -383,6 +449,7 @@ class AlphaEngine:
             pad_id = 0  # placeholder token id (not executed; we slice by length)
             min_len = ModelConfig.MIN_FORMULA_LEN
             lam_ops = ModelConfig.OPS_PENALTY_LAMBDA
+            lam_len = ModelConfig.LEN_PENALTY_LAMBDA
             stop_eps = ModelConfig.STOP_PROB_EPS
             alive_total = 0
             can_stop_total = 0
@@ -501,8 +568,8 @@ class AlphaEngine:
                 best_thr_idx[i] = int(best_k)
                 raw_scores[i] = score
                 ret_val, details = best_ret, best_details
-                # length penalty: reward -= λ * (#ops)
-                penalty = lam_ops * float(ops_count[i].item())
+                # length penalty: reward -= λ_ops * (#ops) + λ_len * (raw token length)
+                penalty = lam_ops * float(ops_count[i].item()) + lam_len * float(last_pos[i].item())
                 reward_i = float(score.item()) - penalty
                 rewards[i] = torch.tensor(reward_i, device=self.device, dtype=torch.float32)
 

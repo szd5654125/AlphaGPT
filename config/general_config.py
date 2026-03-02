@@ -37,6 +37,7 @@ class ModelConfig:
     # variable-length formula
     MIN_FORMULA_LEN = 4  # 至少生成多少步才允许 stop
     OPS_PENALTY_LAMBDA = 0.0001  # reward -= λ * (#ops)
+    LEN_PENALTY_LAMBDA = 0.0001  # reward -= λ * (raw token length)
     STOP_PROB_EPS = 1e-6  # clamp stop prob for numerical stability
 # --- Actor-Critic (baseline) ---
     VALUE_LOSS_COEF = 0.01      # critic loss 权重：先小一点更稳
