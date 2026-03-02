@@ -68,7 +68,7 @@ class StrategyConfig:
     SELL_THRESHOLD = 0.45
 
 
-'''FEATURE_PM1_SPECS = {
+FEATURE_PM1_SPECS = {
     # --- core factors ---
     "ret":         {"kind": "robust_z_softsign"},
     "pressure":    {"kind": "identity_pm1"},
@@ -82,10 +82,10 @@ class StrategyConfig:
     "momentum_rev": {"kind": "bounded_01"},
     "hl_range":    {"kind": "robust_z_softsign"},
     "close_pos":   {"kind": "bounded_01"},
-    "vol_trend":   {"kind": "robust_z_softsign"}}'''
+    "vol_trend":   {"kind": "robust_z_softsign"}}
 
 
-FEATURE_PM1_SPECS = {
+'''FEATURE_PM1_SPECS = {
     # --- core factors ---
     "ret":         {"kind": "robust_z_softsign"},
     "pressure":    {"kind": "identity_pm1"},
@@ -96,7 +96,7 @@ FEATURE_PM1_SPECS = {
     "vol_cluster": {"kind": "robust_z_softsign"},
     "mom_sign": {"kind": "binary_sign"},  # 你在 factors.py 里生成 {-1,+1}
     "rel_strength": {"kind": "bounded_0_100"},
-}
+}'''
 
 
 class ExecutionConfig:

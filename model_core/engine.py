@@ -121,6 +121,11 @@ class AlphaEngine:
         self._assoc_ops = {"ADD", "MUL"}  # 如果你不想 flatten，把这行设为空 set()
         self._idem_ops = {"ABS", "SIGN"}
 
+    @staticmethod
+    def _ast_equal(a, b):
+        """Structural AST equality for small canonical rewrite checks."""
+        return a == b
+
     def _key64(self, toks):
         # 8-byte digest -> python int
         h = hashlib.blake2b(digest_size=8)
@@ -196,13 +201,47 @@ class AlphaEngine:
             x = kids_c[0]
             if x[0] == "OP" and x[1] == "NEG":
                 return x[2][0]
+            # NEG(SUB(a,b)) -> SUB(b,a)
+            if x[0] == "OP" and x[1] == "SUB":
+                a, b = x[2]
+                return ("OP", "SUB", (b, a))
             return ("OP", "NEG", (x,))
         # idempotent: ABS(ABS(x)) -> ABS(x), SIGN(SIGN(x)) -> SIGN(x)
         if name in self._idem_ops:
             x = kids_c[0]
             if x[0] == "OP" and x[1] == name:
                 return x
+            # ABS(NEG(x)) == ABS(x)
+            if name == "ABS" and x[0] == "OP" and x[1] == "NEG":
+                return ("OP", "ABS", (x[2][0],))
             return ("OP", name, (x,))
+        # SUB(x, NEG(y)) -> ADD(x, y)
+        if name == "SUB":
+            a, b = kids_c
+            if b[0] == "OP" and b[1] == "NEG":
+                return self._canon(("OP", "ADD", (a, b[2][0])))
+            if a[0] == "OP" and a[1] == "NEG" and b[0] == "OP" and b[1] == "NEG":
+                # SUB(NEG(a), NEG(b)) -> SUB(b, a)
+                return ("OP", "SUB", (b[2][0], a[2][0]))
+            return ("OP", "SUB", (a, b))
+        # MUL sign-normalization: keep at most one top-level NEG
+        if name == "MUL":
+            a, b = kids_c
+            a_neg = (a[0] == "OP" and a[1] == "NEG")
+            b_neg = (b[0] == "OP" and b[1] == "NEG")
+            if a_neg and b_neg:
+                return self._canon(("OP", "MUL", (a[2][0], b[2][0])))
+            if a_neg:
+                return ("OP", "NEG", (self._canon(("OP", "MUL", (a[2][0], b))),))
+            if b_neg:
+                return ("OP", "NEG", (self._canon(("OP", "MUL", (a, b[2][0]))),))
+            # continue to commutative handling below
+        # GATE(cond, x, x) -> x
+        if name == "GATE":
+            c, x, y = kids_c
+            if self._ast_equal(x, y):
+                return x
+            return ("OP", "GATE", (c, x, y))
         # commutative + associative: flatten + sort
         if name in self._comm_ops:
             flat = []
