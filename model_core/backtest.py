@@ -17,10 +17,8 @@ class MemeBacktest:
         gross_pnl = position * target_ret
         net_pnl = gross_pnl - tx_cost
         cum_ret = net_pnl.sum(dim=1)
-        big_drawdowns = (net_pnl < -0.05).float().sum(dim=1)
-        score = cum_ret - (big_drawdowns * 2.0)
+        score = cum_ret
         activity = position.sum(dim=1)
-        score = torch.where(activity < 5, torch.tensor(-10.0, device=score.device), score)
         final_fitness = torch.median(score)
         details = {"activity_median": torch.median(activity).item(), "turnover_mean": turnover.mean().item(),
                    "turnover_sum_mean": turnover.sum(dim=1).float().mean().item()}

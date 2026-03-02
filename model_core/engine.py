@@ -216,7 +216,7 @@ class AlphaEngine:
                 return ("OP", "ABS", (x[2][0],))
             return ("OP", name, (x,))
         # SUB(x, NEG(y)) -> ADD(x, y)
-        if name == "SUB":
+        if name == "SUB" and len(kids_c) == 2:
             a, b = kids_c
             if b[0] == "OP" and b[1] == "NEG":
                 return self._canon(("OP", "ADD", (a, b[2][0])))
@@ -224,20 +224,29 @@ class AlphaEngine:
                 # SUB(NEG(a), NEG(b)) -> SUB(b, a)
                 return ("OP", "SUB", (b[2][0], a[2][0]))
             return ("OP", "SUB", (a, b))
-        # MUL sign-normalization: keep at most one top-level NEG
+        # MUL sign-normalization: keep at most one top-level NEG.
+        # Works for both binary and flattened n-ary MUL nodes.
         if name == "MUL":
-            a, b = kids_c
-            a_neg = (a[0] == "OP" and a[1] == "NEG")
-            b_neg = (b[0] == "OP" and b[1] == "NEG")
-            if a_neg and b_neg:
-                return self._canon(("OP", "MUL", (a[2][0], b[2][0])))
-            if a_neg:
-                return ("OP", "NEG", (self._canon(("OP", "MUL", (a[2][0], b))),))
-            if b_neg:
-                return ("OP", "NEG", (self._canon(("OP", "MUL", (a, b[2][0]))),))
-            # continue to commutative handling below
+            flat = []
+            for k in kids_c:
+                if (k[0] == "OP") and (k[1] == "MUL"):
+                    flat.extend(list(k[2]))
+                else:
+                    flat.append(k)
+            neg_cnt = 0
+            stripped = []
+            for k in flat:
+                if (k[0] == "OP") and (k[1] == "NEG") and len(k[2]) == 1:
+                    neg_cnt += 1
+                    stripped.append(k[2][0])
+                else:
+                    stripped.append(k)
+            base_mul = ("OP", "MUL", tuple(stripped))
+            if neg_cnt % 2 == 1:
+                return ("OP", "NEG", (self._canon(base_mul),))
+            kids_c = tuple(stripped)
         # GATE(cond, x, x) -> x
-        if name == "GATE":
+        if name == "GATE" and len(kids_c) == 3:
             c, x, y = kids_c
             if self._ast_equal(x, y):
                 return x
@@ -568,16 +577,16 @@ class AlphaEngine:
                     invalid += 1
                     r = info.get("reason", "unknown")
                     reason_hist[r] = reason_hist.get(r, 0) + 1
-                    rewards[i] = -5.0
+                    rewards[i] = -1.0
 
                     if len(bad_examples) < 3:
                         bad_examples.append({"formula": formula, "info": info})
                     continue
 
-                if res.std() < 1e-4:
+                '''if res.std() < 1e-4:
                     lowvar += 1
                     rewards[i] = -10.0
-                    continue
+                    continue'''
 
                 # ---- two-stage threshold search (coarse->refine) ----best_score = None
                 thr_min = thr_bins_list[0]
