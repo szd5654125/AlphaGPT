@@ -260,6 +260,26 @@ class AlphaEngine:
         can_toks = self._ast_to_rpn(can)
         return can_toks if can_toks else toks
 
+    def _canonicalize_batch_targets(self, seqs: torch.Tensor, last_pos: torch.Tensor, indices: torch.Tensor):
+        """Build canonical teacher-forcing targets for selected rows only (e.g., elites)."""
+        k = int(indices.shape[0])
+        max_len = int(seqs.shape[1])
+        canon = torch.zeros((k, max_len), dtype=seqs.dtype, device=self.device)
+        canon_len = torch.zeros(k, dtype=last_pos.dtype, device=self.device)
+        min_len = int(ModelConfig.MIN_FORMULA_LEN)
+        for row, idx in enumerate(indices.tolist()):
+            L = int(last_pos[idx].item())
+            raw_toks = seqs[idx, :L].tolist()
+            can_toks = self._canonicalize_tokens(raw_toks)
+            # keep training/generation min-length constraints consistent
+            if len(can_toks) < min_len:
+                can_toks = raw_toks
+            Lc = len(can_toks)
+            if Lc > 0:
+                canon[row, :Lc] = torch.tensor(can_toks, device=self.device, dtype=torch.long)
+            canon_len[row] = Lc
+        return canon, canon_len
+
     def _remember_key(self, key64):
         """Remember a formula key with FIFO eviction to cap memory."""
 
@@ -595,40 +615,55 @@ class AlphaEngine:
             elite_k = max(1, int(bs * elite_frac))
             elite_idx = torch.topk(rewards, k=elite_k, largest=True).indices  # [K]
             # ---- CEM: behavior cloning on elites (maximize likelihood) ----
-            # We recompute teacher-forced log-likelihood over the elite sequences.
+            # Teacher forcing is done on canonicalized elite sequences so the model learns
+            # to output normalized (often shorter) formulas directly.
             cem_loss = torch.tensor(0.0, device=self.device)
             ent_loss = torch.tensor(0.0, device=self.device)
-            # teacher forcing: step-by-step on prefixes
+            stop_loss = torch.tensor(0.0, device=self.device)
+            stop_coef = float(getattr(ModelConfig, "STOP_LOSS_COEF", 1.0))
+            seqs_e, elite_can_last_pos = self._canonicalize_batch_targets(seqs, last_pos, elite_idx)
+            # teacher forcing: step-by-step on canonical prefixes
             inp_e = torch.zeros((elite_k, 1), dtype=torch.long, device=self.device)
             depth_e = torch.zeros(elite_k, dtype=torch.long, device=self.device)
-            last_pos_e = last_pos[elite_idx]  # [K]
-            seqs_e = seqs[elite_idx]  # [K, MAX_LEN]
+            logits_e, _, _, _, _ = self.model(inp_e)
             for t in range(ModelConfig.MAX_FORMULA_LEN):
                 mask_e = self._build_strict_mask_rpn(depth_e, t)  # [K, V]
-                logits_e, _, _, _, _ = self.model(inp_e)
                 masked_logits = logits_e + mask_e
-                # targets are the sampled tokens (treated as labels)
+                # canonical targets at step t
                 y = seqs_e[:, t]  # [K]
-                # only positions <= last_pos are real tokens
-                valid = (t + 1 <= last_pos_e)
+                # only positions <= canonical length are real tokens
+                valid = (t + 1 <= elite_can_last_pos)
                 if valid.any():
                     ce = F.cross_entropy(masked_logits[valid], y[valid], reduction="mean")
                     cem_loss = cem_loss + ce
                 # entropy bonus (encourage exploration / prevent collapse)
-                if entropy_beta > 0:
-                    if valid.any():
-                        dist_e = CatDist(logits=masked_logits[valid])
-                        ent_loss = ent_loss - entropy_beta * dist_e.entropy().mean()
-                # update depth_e with chosen token y
+                if entropy_beta > 0 and valid.any():
+                    dist_e = CatDist(logits=masked_logits[valid])
+                    ent_loss = ent_loss - entropy_beta * dist_e.entropy().mean()
+                # update depth using canonical token y on valid positions only
                 ar = self.arity_vec[y]
                 is_feat = (ar == 0)
-                depth_e = torch.where(is_feat, depth_e + 1, depth_e - ar + 1)
-                # append token to prefix for next step
-                inp_e = torch.cat([inp_e, y.unsqueeze(1)], dim=1)
+                new_depth_e = torch.where(is_feat, depth_e + 1, depth_e - ar + 1)
+                depth_post = torch.where(valid, new_depth_e, depth_e)
+                # stop supervision must use post-append state (same as sampling loop)
+                inp_post = torch.cat([inp_e, y.unsqueeze(1)], dim=1)
+                logits_next, _, _, _, stop_logit_post = self.model(inp_post)
+                can_stop_post = valid & (depth_post == 1) & (t + 1 >= min_len)
+                stop_target = (elite_can_last_pos == (t + 1)) & can_stop_post
+                if can_stop_post.any():
+                    s_loss = F.binary_cross_entropy_with_logits(
+                        stop_logit_post[can_stop_post],
+                        stop_target[can_stop_post].float(),
+                        reduction="mean",
+                    )
+                    stop_loss = stop_loss + s_loss
+                depth_e = depth_post
+                inp_e = inp_post
+                logits_e = logits_next
             # optional: supervised threshold head on elites (using oracle best_thr_idx)
-            _, _, _, thr_logits_e, _ = self.model(inp_e, last_positions=last_pos_e)
+            _, _, _, thr_logits_e, _ = self.model(inp_e, last_positions=elite_can_last_pos)
             thr_loss = F.cross_entropy(thr_logits_e, best_thr_idx[elite_idx], reduction="mean")
-            loss = cem_loss + thr_loss + ent_loss
+            loss = cem_loss + thr_loss + ent_loss + stop_coef * stop_loss
 
             tqdm.write(
                 f"with seed{self.seed}, InvalidRatio={invalid / bs:.2%} | LowVarRatio={lowvar / bs:.2%} | "
@@ -636,7 +671,8 @@ class AlphaEngine:
                 f"OpsMean={ops_count.float().mean().item():.2f} | EarlyStop={early_stop_ratio:.2%} | "
                 f"StopAbleRatio={stop_able_ratio:.2%} | StopHitRatio={stop_hit_ratio:.2%} | StopPMean={stop_p_mean:.4f} | "
                 f"RawScoreMean={raw_score_mean:.3f} | "
-                f"step={step} cem_loss={float(cem_loss.item()):.3f} thr_loss={float(thr_loss.item()):.3f}"
+                f"step={step} cem_loss={float(cem_loss.item()):.3f} thr_loss={float(thr_loss.item()):.3f} "
+                f"stop_loss={float(stop_loss.item()):.3f}"
             )
             
             # Gradient step
@@ -656,6 +692,7 @@ class AlphaEngine:
                 'BestRaw': f"{self.best_raw_score:.3f}",
                 'CEM': f"{float(cem_loss.item()):.3f}",
                 'THR': f"{float(thr_loss.item()):.3f}",
+                'STOP': f"{float(stop_loss.item()):.3f}",
             }
             
             if self.use_lord and step % 100 == 0:

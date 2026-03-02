@@ -41,6 +41,7 @@ class ModelConfig:
     OPS_PENALTY_LAMBDA = 0.0001  # reward -= λ * (#ops)
     LEN_PENALTY_LAMBDA = 0.0001  # reward -= λ * (raw token length)
     STOP_PROB_EPS = 1e-6  # clamp stop prob for numerical stability
+    STOP_LOSS_COEF = 1.0  # supervised BCE weight for stop_head on elite canonical targets
 # --- Actor-Critic (baseline) ---
     VALUE_LOSS_COEF = 0.01      # critic loss 权重：先小一点更稳
     ADV_NORM_EPS = 1e-5        # advantage 标准化用
