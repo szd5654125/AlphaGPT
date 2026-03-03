@@ -290,10 +290,19 @@ class AlphaEngine:
             for c in kids:
                 if not walk(c):
                     return False
-            for j, (op_name, _) in enumerate(self._op_meta):
-                if op_name == name:
-                    out.append(self.feat_offset + j)
+            for j, (op_name, op_arity) in enumerate(self._op_meta):
+                if op_name != name:
+                    continue
+                tok = self.feat_offset + j
+                # Canonical commutative flattening may produce n-ary ADD/MUL AST nodes.
+                # Emit valid binary-RPN by applying the operator (len(kids)-1) times.
+                if name in self._assoc_ops and op_arity == 2 and len(kids) >= 2:
+                    out.extend([tok] * (len(kids) - 1))
                     return True
+                if len(kids) != op_arity:
+                    return False
+                out.append(tok)
+                return True
             return False
 
         ok = walk(node)
