@@ -44,9 +44,18 @@ class AlphaEngine:
         cfg = CsvLoaderConfig(
             csv_paths=["data/futures_um_monthly_klines_ETHUSDT_5m_0_53.csv"],  # 改成你的路径
             device=self.device,
-            max_symbols=50,  # 你可以先小一点试跑
+            max_symbols=50,       # 旧模式 (segment_mode=False) 用
+            segment_mode=False,   # True = 按 segment 串联新模式；False = 按 symbol pivot 旧模式
+            lookback_bars=0,      # 新模式下每段前 N 根 K 线仅用于指标预热
         )
         self.loader = CsvCryptoDataLoader(cfg).load_data()
+        # 如果 loader 使用 segment 模式，准备好传给 backtest 的额外参数
+        if cfg.segment_mode and self.loader.segment_ids is not None:
+            self._bt_seg_kwargs = {
+                "tradeable_mask": self.loader.tradeable_mask,
+                "segment_ids": self.loader.segment_ids,
+                "n_segments": self.loader.n_segments,
+            }
         self.model = AlphaGPT().to(self.device)
         expected_vocab = FeatureEngineer.INPUT_DIM + len(OPS_CONFIG)
         if getattr(self.model, "vocab_size", None) != expected_vocab:
@@ -77,6 +86,8 @@ class AlphaEngine:
         
         self.vm = StackVM()
         self.bt = MemeBacktest()
+        # segment 模式下传给 bt.evaluate 的额外参数
+        self._bt_seg_kwargs: dict = {}
         
         self.best_score = -float('inf')
         self.best_raw_score = -float('inf')
@@ -621,7 +632,8 @@ class AlphaEngine:
                 for k in coarse_idx:
                     thr = thr_bins_list[k]
                     score_k, ret_k, details_k = self.bt.evaluate(res, self.loader.raw_data_cache,
-                                                                 self.loader.target_ret, float(thr))
+                                                                 self.loader.target_ret, float(thr),
+                                                                 **self._bt_seg_kwargs)
                     s = float(score_k.item())
                     if (best_score is None) or (s > best_score):
                         best_score = s
@@ -634,7 +646,8 @@ class AlphaEngine:
                 for k in range(lo, hi + 1):
                     thr = thr_bins_list[k]
                     score_k, ret_k, details_k = self.bt.evaluate(res, self.loader.raw_data_cache,
-                                                                 self.loader.target_ret, float(thr))
+                                                                 self.loader.target_ret, float(thr),
+                                                                 **self._bt_seg_kwargs)
                     s = float(score_k.item())
                     if s > best_score:
                         best_score = s
