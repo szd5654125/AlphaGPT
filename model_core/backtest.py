@@ -32,19 +32,6 @@ class MemeBacktest:
         prev_pos = torch.roll(position, 1, dims=1)
         prev_pos[:, 0] = 0
 
-        # 新模式: 在每个 segment 的第一个时间步重置 prev_pos
-        # tradeable_mask 已经保证了非交易区仓位为 0，但 roll 会把上一个 segment
-        # 末尾的 0 位带过来——当 lookback_bars>0 时这恰好是 0，没有问题。
-        # 但为了严谨，显式在 segment 边界处（tradeable_mask 从 False→True 的位置）
-        # 将 prev_pos 置 0，这样不依赖 lookback_bars 必须 > 0。
-        if tradeable_mask is not None and tradeable_mask.shape[1] > 1:
-            # 找到 tradeable_mask 从 0→1 的跳变位置
-            mask_f = tradeable_mask.float()
-            edge = (mask_f[:, 1:] - mask_f[:, :-1]) > 0  # [1, T-1]
-            # edge[i] = True 意味着位置 i+1 是某个 segment 交易区的起点
-            edge_pad = torch.cat([torch.zeros(1, 1, dtype=torch.bool, device=edge.device), edge], dim=1)
-            prev_pos = prev_pos * (~edge_pad).float()
-
         turnover = torch.abs(position - prev_pos)
         tx_cost = turnover * total_slippage_one_way
         gross_pnl = position * target_ret
